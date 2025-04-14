@@ -1,0 +1,4 @@
+대상: 구글 검색
+URL: https://www.google.com
+제목: https://www.google.com/search?q=Python+Selenium+%EC%9E%90%EB%8F%99%ED%99%94&sca_esv=0215ca7c86a2fe5f&source=hp&ei=dSn9Z_DNIYPt1e8PmuW4-A0&iflsig=ACkRmUkAAAAAZ_03hTxbML0YubqZkxyJUoOXsy9kUbAr&ved=0ahUKEwiw3PeO69eMAxWDdvUHHZoyDt8Q4dUDCBA&uact=5&oq=Python+Selenium+%EC%9E%90%EB%8F%99%ED%99%94&gs_lp=Egdnd3Mtd2l6IhlQeXRob24gU2VsZW5pdW0g7J6Q64-Z7ZmUSBtQAFgPcAB4AJABAJgBAKABAKoBALgBA8gBAPgBAZgCAKACAJgDAJIHAKAHALIHALgHAA&sclient=gws-wiz&sei=din9Z5jSG_6Mvr0P5sPjoAI
+시간: 2025-04-14 15:27:53
