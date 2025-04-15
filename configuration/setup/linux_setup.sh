@@ -1065,6 +1065,63 @@ EOF
   fi
 }
 
+install_gemini_dependencies() {
+  log_info "Gemini API 의존성 설치 중..."
+  
+  if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    # Python 가상 환경 활성화
+    source venv/bin/activate
+    
+    # 필수 패키지 설치
+    pip install google-generativeai python-dotenv requests
+    
+    log_success "Gemini API 의존성 설치 완료"
+  else
+    log_info "현재 운영체제에서는 추가 의존성이 필요하지 않습니다."
+  fi
+}
+
+generate_gemini_config() {
+  local task_description=$1
+  local config_file=$2
+  
+  log_info "Gemini API를 이용한 config 생성 시작..."
+  
+  # Python 스크립트 실행
+  python3 ../gemini/gemini_config_gen.py \
+    --task "$task_description" \
+    --output "$config_file"
+  
+  if [ -f "$config_file" ]; then
+    log_success "Config 파일 생성 완료: $config_file"
+  else
+    log_error "Config 파일 생성 실패"
+  fi
+}
+
+# 명령줄 인자 처리 업데이트
+parse_arguments() {
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+      --gemini-api-key)
+        GEMINI_API_KEY="$2"
+        shift 2
+        ;;
+      --gemini-task)
+        GEMINI_TASK="$2"
+        GEMINI_ENABLED=true
+        shift 2
+        ;;
+      --gemini-output)
+        GEMINI_CONFIG_OUTPUT="$2"
+        shift 2
+        ;;
+      # 기존 옵션 유지...
+    esac
+  done
+}
+
 # 설치 후 안내사항 출력
 print_post_setup_guide() {
   echo
@@ -1095,6 +1152,7 @@ print_post_setup_guide() {
 }
 
 # 메인 함수
+
 main() {
   echo "===== Selenium 웹 자동화 환경 설정 ====="
   
@@ -1114,13 +1172,18 @@ main() {
   setup_virtualenv
   install_python_packages
   install_browser_drivers
+  
+  # 새로운 Gemini 관련 옵션 처리
+  if [ "$GEMINI_ENABLED" = true ]; then
+    install_gemini_dependencies
+    generate_gemini_config "$GEMINI_TASK" "$GEMINI_CONFIG_OUTPUT"
+  fi
+  
   generate_sample_script
   
   log_success "셀레니움 웹 자동화 환경 설정이 완료되었습니다."
   
-  # 환경 설정 후 안내사항 출력
   print_post_setup_guide
 }
-
 # 스크립트 시작
 main "$@"

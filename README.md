@@ -14,6 +14,7 @@
 
 다음 과정을 통해 셸 스크립트를 실행하여 환경을 구성한다:
 
+## 기본
 ```bash
 # 스크립트 파일 복사
 cp configuration/linux_setup.sh /대상/디렉토리/
@@ -23,6 +24,15 @@ chmod +x ./linux_setup.sh
 
 # 스크립트 실행
 sudo /bin/bash ./linux_setup.sh
+```
+
+## gemini config generator 사용
+```bash
+# 환경 설정 및 Gemini 통합 설치
+sudo /bin/bash linux_setup.sh \
+  --gemini-api-key "your_api_key_here" \
+  --gemini-task "네이버에서 '인공지능' 검색 후 결과 스크린샷 저장" \
+  --gemini-output "naver_search_config.json"
 ```
 
 ### 2.3 구성 요소 분석

@@ -74,3 +74,19 @@
   ├── web_automation.py   # 기본 자동화 샘플 스크립트
   └── test_headless.py    # 헤드리스 모드 테스트 스크립트
 ```
+
+## config generator 통합 사용법
+```bash
+# 환경 설정 및 Gemini 통합 설치
+sudo /bin/bash linux_setup.sh \
+  --gemini-api-key "your_api_key_here" \
+  --gemini-task "네이버에서 '인공지능' 검색 후 결과 스크린샷 저장" \
+  --gemini-output "naver_search_config.json"
+```
+
+## gemini using flags
+```bash
+--gemini-api-key	Gemini API 키	--gemini-api-key "your_key"
+--gemini-task	자동화 작업 설명	--gemini-task "로그인 후 데이터 수집"
+--gemini-output	출력 파일 경로	--gemini-output "custom_config.json"
+```
