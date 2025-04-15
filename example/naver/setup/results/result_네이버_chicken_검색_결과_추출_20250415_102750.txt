@@ -1,0 +1,4 @@
+대상: 네이버 chicken 검색 결과 추출
+URL: https://www.naver.com
+제목: chicken : 네이버 검색
+시간: 2025-04-15 10:27:50

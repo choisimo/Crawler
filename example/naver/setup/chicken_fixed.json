@@ -1,0 +1,68 @@
+{
+  "browser": {
+    "type": "chrome",
+    "headless": true,
+    "options": [
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--window-size=1920,1080",
+      "--incognito"
+    ]
+  },
+  "targets": [
+    {
+      "name": "네이버 chicken 검색 결과 추출",
+      "url": "https://www.naver.com",
+      "wait_for": {
+        "type": "id",
+        "value": "query",
+        "timeout": 10
+      },
+      "actions": [
+        {
+          "type": "input",
+          "selector": {
+            "type": "id",
+            "value": "query"
+          },
+          "text": "chicken",
+          "submit": false
+        },
+        {
+          "type": "click",
+          "selector": {
+            "type": "css",
+            "value": ".btn_search"
+          }
+        },
+        {
+          "type": "wait",
+          "seconds": 3
+        },
+        {
+          "type": "screenshot",
+          "filename": "naver_search_results.png"
+        },
+        {
+          "type": "extract",
+          "selector": {
+            "type": "css",
+            "value": ".total_tit"
+          },
+          "save": true,
+          "output_file": "chicken_search_results.txt"
+        }
+      ]
+    }
+  ],
+  "output": {
+    "log_level": "INFO",
+    "results_dir": "results",
+    "screenshots_dir": "screenshots",
+    "logs_dir": "logs"
+  },
+  "timeouts": {
+    "default_wait": 30,
+    "page_load": 60
+  }
+}

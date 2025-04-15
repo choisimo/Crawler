@@ -1,0 +1,14 @@
+2025-04-15 10:27:46,161 - web_automation - INFO - 설정 파일 로드 완료: chicken_fixed.json
+2025-04-15 10:27:46,161 - web_automation - INFO - DISPLAY 환경변수 설정: :99
+2025-04-15 10:27:46,361 - web_automation - INFO - 드라이버 설정 완료 (브라우저: chrome, 헤드리스: True)
+2025-04-15 10:27:46,361 - web_automation - INFO - 대상 처리 시작: 네이버 chicken 검색 결과 추출 (https://www.naver.com)
+2025-04-15 10:27:47,177 - web_automation - INFO - 페이지 로딩 완료: https://www.naver.com
+2025-04-15 10:27:47,399 - web_automation - INFO - 입력 완료: 'chicken' (제출: False)
+2025-04-15 10:27:47,443 - web_automation - INFO - 클릭 완료: .btn_search
+2025-04-15 10:27:50,443 - web_automation - INFO - 3초 대기 완료
+2025-04-15 10:27:50,534 - web_automation - INFO - 스크린샷 저장: screenshots/naver_search_results.png
+2025-04-15 10:27:50,559 - web_automation - INFO - 데이터 추출 완료: 4개 항목
+2025-04-15 10:27:50,559 - web_automation - INFO - 추출 결과 저장: results/chicken_search_results.txt
+2025-04-15 10:27:50,562 - web_automation - INFO - 결과 저장 완료: results/result_네이버_chicken_검색_결과_추출_20250415_102750.txt
+2025-04-15 10:27:50,562 - web_automation - INFO - 모든 작업 완료
+2025-04-15 10:27:50,627 - web_automation - INFO - 드라이버 종료
