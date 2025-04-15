@@ -1257,13 +1257,27 @@ class GeminiConfigGenerator:
 
     def _extract_and_validate_config(self, raw_text):
         """텍스트에서 JSON 부분 추출 및 기본 검증"""
-        try:
-            # 텍스트에서 JSON 부분 추출 시도
-            json_start = raw_text.find('{')
-            json_end = raw_text.rfind('}') + 1
+def _extract_and_validate_config(self, raw_text):
+    """텍스트에서 JSON 부분 추출 및 기본 검증"""
+    try:
+        # 텍스트에서 JSON 부분 추출 시도
+        json_start = raw_text.find('{')
+        json_end = raw_text.rfind('}') + 1
+        
+        if json_start >= 0 and json_end > json_start:
+            json_str = raw_text[json_start:json_end]
             
-            if json_start >= 0 and json_end > json_start:
-                json_str = raw_text[json_start:json_end]
+            # 주석 제거 (// 로 시작하는 라인 제거)
+            json_str = re.sub(r'//.*?(\n|$)', '', json_str)
+            
+            # 다중 라인 주석 제거 시도
+            json_str = re.sub(r'/\*.*?\*/', '', json_str, flags=re.DOTALL)
+            
+            # 쉼표 문제 해결 (마지막 항목 후 쉼표 제거)
+            json_str = re.sub(r',\s*}', '}', json_str)
+            json_str = re.sub(r',\s*]', ']', json_str)
+            
+            try:
                 config = json.loads(json_str)
                 
                 # 필수 필드 검증
