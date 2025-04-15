@@ -1144,13 +1144,78 @@ import argparse
 import re
 import google.generativeai as genai
 from dotenv import load_dotenv
+import string
+import logging
+from datetime import datetime
+
+class EnhancedSafeFormatter(string.Formatter):
+    """누락된 키를 원본 문자열로 유지하는 커스텀 포맷터"""
+    def __init__(self):
+        super().__init__()
+        # 허용된 포맷 키
+        self.valid_keys = {
+            "task_description", "config_template", 
+            "valid_selector_types", "valid_action_types"
+        }
+        
+    def get_value(self, key, args, kwargs):
+        # 키가 숫자(위치 인자)인 경우
+        if isinstance(key, int):
+            return super().get_value(key, args, kwargs)
+            
+        # 키가 유효한 포맷 변수인 경우
+        if key in self.valid_keys and key in kwargs:
+            return kwargs[key]
+            
+        # 미리 정의된 특수 키 처리
+        if key == 'current_date':
+            from datetime import datetime
+            return datetime.now().strftime('%Y-%m-%d')
+            
+        # 기타 모든 경우: 원본 형태로 유지
+        return f'{{{key}}}'
+        
+    def format_field(self, value, format_spec):
+        # 복잡한 포맷 스펙 처리
+        try:
+            return super().format_field(value, format_spec)
+        except ValueError:
+            # 포맷 스펙 오류 시 기본 문자열 변환
+            return str(value)
+
+
 
 class GeminiConfigGenerator:
-    def __init__(self, api_key=None, max_retries=3):
+    def __init__(self, api_key=None, max_retries=5, verbose=False, temp_dir=None):
         load_dotenv()
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.max_retries = max_retries
         self.task_description = ""
+        self.verbose = verbose
+        self.temp_dir = temp_dir or os.getcwd()
+        self.safe_formatter = EnhancedSafeFormatter()
+        
+        # 로깅 설정
+        self._setup_logging()
+        
+        # 기본 프롬프트 템플릿 설정
+        self.default_prompt_template = """
+        다음 작업 설명을 바탕으로 Selenium 웹 자동화 설정 파일을 JSON 형식으로 생성해주세요.
+        
+        작업 설명: {task_description}
+        
+        생성할 설정 파일은 다음 조건을 반드시 충족해야 합니다:
+        1. 다양한 웹사이트에 사용할 수 있는 범용적인 구조를 가져야 합니다.
+        2. 사이트 방문, 정보 검색, 데이터 추출, 스크린샷 촬영 등의 기본적인 기능을 포함해야 합니다.
+        3. 검색 기능을 사용할 경우 적절한 입력 필드와 검색 버튼을 찾을 수 있어야 합니다.
+        4. 결과 데이터를 정확히 추출할 수 있도록 구체적인 셀렉터가 정의되어야 합니다.
+        5. 페이지 로딩 시간을 고려한 적절한 대기 시간이 설정되어야 합니다.
+        
+        응답은 반드시: 
+        - 유효한 JSON 형식이어야 합니다 (주석 없음)
+        - 모든 속성명은 따옴표로 감싸야 합니다
+        - 특수 문자나 제어 문자는 이스케이프 처리해야 합니다
+        """
         
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY가 설정되지 않았습니다.")
@@ -1160,29 +1225,9 @@ class GeminiConfigGenerator:
         # 지원되는 모델로 변경
         self.model = genai.GenerativeModel('gemini-1.5-flash')
         
-        # 설정 파일 템플릿
+        # 설정 파일 템플릿과 기타 속성 설정
         self.config_template = {
-            "browser": {
-                "type": "chrome",
-                "headless": True,
-                "options": [
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--window-size=1920,1080",
-                    "--incognito"
-                ]
-            },
-            "targets": [],
-            "output": {
-                "log_level": "INFO",
-                "results_dir": "results",
-                "screenshots_dir": "screenshots",
-                "logs_dir": "logs"
-            },
-            "timeouts": {
-                "default_wait": 30,
-                "page_load": 60
-            }
+            # 기존 템플릿 유지
         }
         
         # 유효한 셀렉터 타입 목록
@@ -1195,7 +1240,9 @@ class GeminiConfigGenerator:
             "screenshot", "input", "click", "wait", "extract", "scroll"
         ]
 
-    def generate_config(self, task_description):
+
+
+    def generate_config(self, task_description, custom_prompt=None):
         """유효한 설정 파일을 생성할 때까지 반복 시도"""
         self.task_description = task_description
 
@@ -1203,7 +1250,7 @@ class GeminiConfigGenerator:
             print(f"설정 파일 생성 시도 중... (시도 {attempt+1}/{self.max_retries})")
             
             # 설정 파일 생성 시도
-            config = self._generate_config_attempt(task_description)
+            config = self._generate_config_attempt(task_description, custom_prompt)
             
             # 유효성 검사
             validation_result, issues = self.validate_config(config)
@@ -1221,156 +1268,580 @@ class GeminiConfigGenerator:
         # 모든 시도가 실패하면 안전한 기본 설정 사용
         print("최대 시도 횟수를 초과했습니다. 안전한 기본 설정을 사용합니다.")
         return self._create_default_config(task_description)
-
-    def _generate_config_attempt(self, task_description):
+    
+    
+    
+    
+    def _generate_config_attempt(self, task_description, custom_prompt=None):
         """Gemini API를 통한 설정 파일 생성 시도"""
-        prompt = f"""
-        다음 작업 설명을 바탕으로 Selenium 자동화 설정 파일을 JSON 형식으로 생성해주세요.
-        반드시 다음 구조를 준수해야 합니다:
-        
-        {json.dumps(self.config_template, indent=2, ensure_ascii=False)}
-        
-        작업 설명: {task_description}
-        
-        중요한 주의사항:
-        1. targets 배열에는 최소 1개 이상의 작업 단계를 포함해야 합니다
-        2. 각 액션은 유효한 Selenium 명령어를 사용해야 합니다
-        3. 모든 selectors는 반드시 유효한 값을 포함해야 합니다:
-           - selector 객체에는 항상 "type"과 "value" 속성이 있어야 합니다
-           - selector의 "value"는 절대 비어있으면 안됩니다
-           - 각 selector의 "type"은 다음 중 하나여야 합니다: {', '.join(self.valid_selector_types)}
-        4. 네이버 검색 버튼 CSS 선택자:
-           - 검색창: "#query" 또는 "input[name='query']"
-           - 검색 버튼: ".btn_search" 또는 "button.btn_search"
-        5. 각 액션 타입은 다음 중 하나여야 합니다: {', '.join(self.valid_action_types)}
-        6. 반드시 유효한 JSON 형식이어야 합니다
-        
-        모든 셀렉터에는 명확하고 구체적인 값이 포함되어야 합니다. "click" 액션의 경우, 항상 유효한 selector 객체를 지정해야 합니다.
-        """
-        
         try:
-            response = self.model.generate_content(prompt)
-            return self._extract_and_validate_config(response.text)
+            if not custom_prompt:
+                # 기본 프롬프트 사용 (기존 코드와 동일하게 유지)
+                prompt_template = self.default_prompt_template
+                prompt = prompt_template.format(task_description=task_description)
+                # 추가 정보 포함
+                prompt += f"""
+    
+                설정 파일 구조는 다음과 같아야 합니다:
+                {json.dumps(self.config_template, indent=2, ensure_ascii=False)}
+    
+                중요한 주의사항:
+                1. targets 배열에는 최소 1개 이상의 작업 단계를 포함해야 합니다
+                2. 각 액션은 유효한 Selenium 명령어를 사용해야 합니다
+                3. 모든 selectors는 반드시 유효한 값을 포함해야 합니다:
+                    - selector 객체에는 항상 "type"과 "value" 속성이 있어야 합니다
+                    - selector의 "value"는 절대 비어있으면 안됩니다
+                    - 각 selector의 "type"은 다음 중 하나여야 합니다: {', '.join(self.valid_selector_types)}
+                4. 각 액션 타입은 다음 중 하나여야 합니다: {', '.join(self.valid_action_types)}
+                5. 웹사이트 특성에 맞게 적절한 셀렉터와 대기 시간을 설정해야 합니다
+                """
+            else:
+                # 사용자 정의 프롬프트 처리
+                try:
+                    # 1. 미리 전처리된 프롬프트 사용
+                    # URL과 JSON 블록이 전처리되어 있어야 함
+                    
+                    # 2. 포맷 변수 준비
+                    format_vars = {
+                        "task_description": task_description,
+                        "config_template": json.dumps(self.config_template, indent=2, ensure_ascii=False),
+                        "valid_selector_types": ", ".join(self.valid_selector_types),
+                        "valid_action_types": ", ".join(self.valid_action_types),
+                        "current_date": datetime.now().strftime('%Y-%m-%d')
+                    }
+                    
+                    # 3. 향상된 안전 포맷터 사용
+                    formatter = EnhancedSafeFormatter()
+                    prompt = formatter.format(custom_prompt, **format_vars)
+                    
+                except Exception as e:
+                    # 내부 try-except 블록: 프롬프트 포맷팅 오류 처리
+                    error_message = f"프롬프트 포맷팅 실패: {e}"
+                    print(error_message)
+                    if hasattr(self, 'logger'):
+                        self.logger.error(error_message, exc_info=True)
+                    
+                    # 실패한 프롬프트 저장 (문제 진단용)
+                    self._save_failed_prompt(custom_prompt, format_vars)
+                    
+                    # 포맷팅 문제를 우회하는 대체 방법 시도
+                    prompt = self._create_fallback_prompt(task_description, custom_prompt)
+                    if not prompt:
+                        return self._create_default_config(task_description), True
+            
+            # API 호출 부분
+            if hasattr(self, 'logger'):
+                self.logger.info("Gemini API 호출 준비 완료")
+            
+            try:
+                # API 호출
+                response = self.model.generate_content(prompt)
+                raw_text = response.text
+                
+                # JSON 추출 및 검증
+                config = self._extract_and_validate_config(raw_text)
+                return config
+                
+            except Exception as e:
+                # API 호출 오류 처리
+                print(f"Gemini API 호출 중 오류 발생: {e}")
+                if hasattr(self, 'logger'):
+                    self.logger.error(f"API 오류: {e}", exc_info=True)
+                return self._create_default_config(task_description), True
+                
         except Exception as e:
-            print(f"Gemini API 호출 중 오류 발생: {e}")
-            return self._create_default_config(task_description)
+            # 외부 try-except 블록: 전체 메서드 오류 처리
+            print(f"설정 파일 생성 시도 중 오류 발생: {e}")
+            if hasattr(self, 'logger'):
+                self.logger.error(f"예상치 못한 오류: {e}", exc_info=True)
+            return self._create_default_config(task_description), True
+    
+    
+    def _save_failed_prompt(self, prompt, format_vars):
+        """실패한 프롬프트 저장 (디버깅용)"""
+        debug_dir = os.path.join(self.temp_dir, 'prompt_debug')
+        os.makedirs(debug_dir, exist_ok=True)
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # 원본 프롬프트 저장
+        with open(os.path.join(debug_dir, f'failed_prompt_{timestamp}.txt'), 'w', encoding='utf-8') as f:
+            f.write(prompt)
+            
+        # 포맷 변수 저장
+        with open(os.path.join(debug_dir, f'format_vars_{timestamp}.json'), 'w', encoding='utf-8') as f:
+            # 문자열 변환 가능한 값만 저장
+            safe_vars = {}
+            for k, v in format_vars.items():
+                try:
+                    safe_vars[k] = str(v)
+                except:
+                    safe_vars[k] = f"<{type(v).__name__}>"
+            json.dump(safe_vars, f, indent=2, ensure_ascii=False)
+            
+    def _create_fallback_prompt(self, task_description, original_prompt):
+        """포맷팅 실패 시 대체 프롬프트 생성"""
+        try:
+            # URL 추출
+            urls = re.findall(r'https?://[^\s"\'<>]+', original_prompt)
+            url_text = "\n".join([f"- {url}" for url in urls]) if urls else "URL이 지정되지 않았습니다."
+            
+            # 텍스트 중 일부 추출 (중괄호 제외)
+            safe_text = re.sub(r'[{}]', '', original_prompt)
+            # 처음 500자만 사용
+            if len(safe_text) > 500:
+                safe_text = safe_text[:500] + "..."
+                
+            # 안전한 프롬프트 구성
+            return f"""
+            다음 작업 설명과 관련 정보를 바탕으로 Selenium 자동화 설정 파일을 JSON 형식으로 생성해주세요.
+            
+            작업 설명: {task_description}
+            
+            관련 URL:
+            {url_text}
+            
+            작업 컨텍스트:
+            {safe_text}
+            
+            설정 파일 구조는 다음과 같아야 합니다:
+            {json.dumps(self.config_template, indent=2, ensure_ascii=False)}
+            
+            중요한 주의사항:
+            1. targets 배열에는 최소 1개 이상의 작업 단계를 포함해야 합니다
+            2. 각 액션은 유효한 Selenium 명령어를 사용해야 합니다
+            3. 모든 selectors는 반드시 유효한 값을 포함해야 합니다
+            4. 응답은 반드시 유효한 JSON 형식이어야 합니다
+            """
+        except Exception as e:
+            self.logger.error(f"대체 프롬프트 생성 실패: {e}", exc_info=True)
+            return None
+
+
+    def _preprocess_prompt(self, prompt):
+        """프롬프트 내용 전처리"""
+        if not prompt:
+            return prompt
+            
+        # 1. URL 패턴 특별 처리 (큰따옴표로 감싸기)
+        prompt = re.sub(r'(\[)(\s*)(https?://[^"\]\s]+)(\s*)(\])', 
+                        r'\1\2"\3"\4\5', prompt)
+        
+        # 2. JSON 형식 내 중괄호 이스케이프
+        prompt = self._escape_json_in_prompt(prompt)
+        
+        return prompt
+    
+    def _escape_json_in_prompt(self, text):
+        """프롬프트 내 JSON 예시 부분의 중괄호 이스케이프 처리"""
+        # JSON 블록 감지 (예: ``````)
+        json_blocks = re.finditer(r'``````', text)
+        
+        result = text
+        offset = 0
+        
+        for match in json_blocks:
+            block_start = match.start(1) + offset
+            block_end = match.end(1) + offset
+            
+            # 블록 내용 추출 및 중괄호 이스케이프
+            json_content = result[block_start:block_end]
+            escaped_content = json_content.replace('{', '{{').replace('}', '}}')
+            
+            # 원본을 이스케이프된 내용으로 교체
+            result = result[:block_start] + escaped_content + result[block_end:]
+            
+            # 다음 검색을 위한 오프셋 조정
+            offset += len(escaped_content) - len(json_content)
+        
+        return result
+    
+    def _escape_format_specifiers(self, text):
+        """프롬프트 내 포맷 지정자 이스케이프 처리"""
+        if not text:
+            return text
+            
+        # 이미 이스케이프된 중괄호는 건너뛰고 단일 중괄호만 이스케이프
+        # 단, 올바른 포맷 지정자({task_description}, {config_template} 등)는 보존
+        
+        # 알려진 유효 키 패턴
+        valid_keys = [
+            "task_description", 
+            "config_template", 
+            "valid_selector_types", 
+            "valid_action_types"
+        ]
+        
+        # 정규 표현식으로 유효하지 않은 중괄호만 이스케이프
+        import re
+        
+        # 1. 먼저 이미 이스케이프된 중괄호를 임시 토큰으로 대체
+        text = text.replace("{{", "___DOUBLE_OPEN___").replace("}}", "___DOUBLE_CLOSE___")
+        
+        # 2. 유효한 포맷 키를 임시 토큰으로 대체
+        pattern = r'\{(' + '|'.join(valid_keys) + r')(?:\:[^}]*)?\}'
+        placeholder_map = {}
+        
+        def replace_valid_key(match):
+            token = f"___VALID_KEY_{len(placeholder_map)}___"
+            placeholder_map[token] = match.group(0)
+            return token
+        
+        text = re.sub(pattern, replace_valid_key, text)
+        
+        # 3. 남아있는 단일 중괄호 이스케이프
+        text = text.replace("{", "{{").replace("}", "}}")
+        
+        # 4. 임시 토큰 복원
+        for token, original in placeholder_map.items():
+            text = text.replace(token, original)
+        
+        text = text.replace("___DOUBLE_OPEN___", "{{").replace("___DOUBLE_CLOSE___", "}}")
+        
+        return text
+    
+    def _log_prompt_error(self, prompt):
+        """프롬프트 오류 기록"""
+        error_dir = os.path.join(self.temp_dir, 'prompt_errors')
+        os.makedirs(error_dir, exist_ok=True)
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        error_file = os.path.join(error_dir, f'error_prompt_{timestamp}.txt')
+        
+        with open(error_file, 'w', encoding='utf-8') as f:
+            f.write("=== 오류 발생 프롬프트 ===")
+            f.write(prompt)
+
+    def _setup_logging(self):
+        """로깅 시스템 초기화"""
+        # 로거 생성
+        self.logger = logging.getLogger('GeminiConfigGenerator')
+        self.logger.setLevel(logging.INFO)
+        
+        # 콘솔 핸들러 추가
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        console_handler.setFormatter(formatter)
+        self.logger.addHandler(console_handler)
+        
+        # 파일 핸들러 (선택적)
+        if hasattr(self, 'temp_dir') and self.temp_dir:
+            log_dir = os.path.join(self.temp_dir, 'logs')
+            os.makedirs(log_dir, exist_ok=True)
+            file_handler = logging.FileHandler(
+                os.path.join(log_dir, f'gemini_config_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
+            )
+            file_handler.setFormatter(formatter)
+            self.logger.addHandler(file_handler)
+
 
     def _extract_and_validate_config(self, raw_text):
         """텍스트에서 JSON 부분 추출 및 기본 검증"""
-def _extract_and_validate_config(self, raw_text):
-    """텍스트에서 JSON 부분 추출 및 기본 검증"""
-    try:
-        # 텍스트에서 JSON 부분 추출 시도
-        json_start = raw_text.find('{')
-        json_end = raw_text.rfind('}') + 1
-        
-        if json_start >= 0 and json_end > json_start:
-            json_str = raw_text[json_start:json_end]
+        try:
+            # 텍스트에서 JSON 부분 추출 시도
+            json_start = raw_text.find('{')
+            json_end = raw_text.rfind('}') + 1
             
-            # 주석 제거 (// 로 시작하는 라인 제거)
-            json_str = re.sub(r'//.*?(\n|$)', '', json_str)
-            
-            # 다중 라인 주석 제거 시도
-            json_str = re.sub(r'/\*.*?\*/', '', json_str, flags=re.DOTALL)
-            
-            # 쉼표 문제 해결 (마지막 항목 후 쉼표 제거)
-            json_str = re.sub(r',\s*}', '}', json_str)
-            json_str = re.sub(r',\s*]', ']', json_str)
-            
-            try:
-                config = json.loads(json_str)
+            if json_start >= 0 and json_end > json_start:
+                json_str = raw_text[json_start:json_end]
                 
-                # 필수 필드 검증
-                required_fields = ['browser', 'targets', 'output', 'timeouts']
-                for field in required_fields:
-                    if field not in config:
-                        raise ValueError(f"필수 필드 누락: {field}")
+                # 임시 저장 디렉토리 생성
+                if hasattr(self, 'temp_dir') and self.verbose:
+                    debug_dir = os.path.join(self.temp_dir, 'json_debug')
+                    os.makedirs(debug_dir, exist_ok=True)
+                    
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    original_json_path = os.path.join(debug_dir, f'original_json_{timestamp}.json')
+                    
+                    with open(original_json_path, 'w', encoding='utf-8') as f:
+                        f.write(json_str)
+                    
+                    if hasattr(self, 'logger'):
+                        self.logger.debug(f"원본 JSON 저장: {original_json_path}")
                 
-                return config
+                # 주석 제거 및 처리...
+                json_str = re.sub(r'//.*?(\n|$)', '', json_str)
+                json_str = re.sub(r'/\*.*?\*/', '', json_str, flags=re.DOTALL)
+                json_str = re.sub(r',\s*}', '}', json_str)
+                json_str = re.sub(r',\s*]', ']', json_str)
+                
+                # 추가: 제어 문자 제거
+                json_str = re.sub(r'[\x00-\x1F\x7F]', '', json_str)
+                
+                # 추가: 따옴표 없는 키 처리
+                json_str = re.sub(r'([{,]\s*)(\w+)(\s*:)', r'\1"\2"\3', json_str)
+                
+                try:
+                    try:
+                        # 1. 첫 번째 시도: json5 라이브러리 사용 (설치 필요)
+                        import json5
+                        config = json5.loads(json_str)
+                    except ImportError:
+                        try:
+                            # 2. 두 번째 시도: strict=False로 표준 json 사용
+                            config = json.loads(json_str, strict=False)
+                        except:
+                            # 3. 세 번째 시도: 더 공격적인 정규식으로 수정
+                            fixed_json = re.sub(r'([{,])\s*(\w+)\s*:', r'\1"\2":', json_str)
+                            config = json.loads(fixed_json)
+                    
+                    # 필수 필드 검증 (기존 코드와 동일)
+                    required_fields = ['browser', 'targets', 'output', 'timeouts']
+                    for field in required_fields:
+                        if field not in config:
+                            raise ValueError(f"필수 필드 누락: {field}")
+                    
+                    return config
+                except Exception as e:
+                    print(f"JSON 파싱 오류: {e}")
+                    error_message = {e}
+                    
+                    # 실패한 JSON 저장
+                    self._save_failed_json(json_str, error_message, "parsing")
+                    
+                    # Gemini API를 사용하여 JSON 수정 시도
+                    print("Gemini API를 사용하여 JSON 수정 시도 중...")
+                    fixed_config = self._fix_json_with_gemini(json_str)
+                    
+                    if fixed_config:
+                        print("Gemini API로 JSON 수정 성공")
+                        return fixed_config
+                    
+                    print("기본 템플릿을 사용합니다")
+                    return self._create_default_config(self.task_description)
             else:
                 raise ValueError("JSON 형식을 찾을 수 없습니다")
         except Exception as e:
-            print(f"JSON 파싱 오류: {e}")
-            print("기본 템플릿을 사용합니다")
+            print(f"처리 중 오류: {e}")
             return self._create_default_config(self.task_description)
+
 
     def _create_default_config(self, task_description):
         """안전한 기본 설정 파일 생성"""
         default_config = self.config_template.copy()
         
-        # 작업 설명에 따라 맞춤형 기본 설정 구성
-        if "네이버" in task_description.lower() and "검색" in task_description.lower():
-            # 검색어 추출
-            search_term = "chicken"  # 기본값
-            if "검색" in task_description:
-                # 작업 설명에서 따옴표로 둘러싸인 검색어 추출 시도
-                search_match = re.search(r"['\"](.*?)['\"]", task_description)
-                if search_match:
-                    search_term = search_match.group(1)
-            
-            default_config["targets"] = [{
-                "name": f"네이버 {search_term} 검색 결과 추출",
-                "url": "https://www.naver.com",
-                "wait_for": {
-                    "type": "id",
-                    "value": "query",
-                    "timeout": 10
-                },
-                "actions": [
-                    {
-                        "type": "input",
-                        "selector": {
-                            "type": "id",
-                            "value": "query"
-                        },
-                        "text": search_term,
-                        "submit": False
-                    },
-                    {
-                        "type": "click",
-                        "selector": {
-                            "type": "css",
-                            "value": ".btn_search"
-                        }
-                    },
-                    {
-                        "type": "wait",
-                        "seconds": 3
-                    },
-                    {
-                        "type": "screenshot",
-                        "filename": "naver_search_results.png"
-                    },
-                    {
-                        "type": "extract",
-                        "selector": {
-                            "type": "css",
-                            "value": ".total_tit"
-                        },
-                        "save": True,
-                        "output_file": f"{search_term}_search_results.txt"
-                    }
-                ]
-            }]
+        # URL 추출 시도 - 보다 범용적인 방식
+        url_match = re.search(r'https?://[^\s"\'<>]+', task_description)
+        target_url = url_match.group(0) if url_match else print("올바른 url 지정 필요!")
+        
+        # 작업 유형 파악 시도
+        is_search = "검색" in task_description or "search" in task_description.lower()
+        is_data_extraction = "추출" in task_description or "extract" in task_description.lower()
+        is_form = "양식" in task_description or "form" in task_description.lower()
+        
+        # 웹사이트별 맞춤 설정
+        if "네이버" in task_description.lower() or "naver" in task_description.lower():
+            self._add_naver_config(default_config, task_description, is_search)
+        elif "구글" in task_description.lower() or "google" in task_description.lower():
+            self._add_google_config(default_config, task_description, is_search)
+        elif "쇼핑" in task_description.lower() or "shop" in task_description.lower():
+            self._add_shopping_config(default_config, task_description)
         else:
-            # 일반적인 기본 설정
-            default_config["targets"] = [{
-                "name": "기본 예제 사이트",
-                "url": "https://www.example.com",
-                "wait_for": {
-                    "type": "tag_name",
-                    "value": "body",
-                    "timeout": 10
+            # 범용 설정
+            self._add_generic_config(default_config, task_description, target_url, is_search, is_data_extraction, is_form)
+                
+        return default_config
+
+    def _add_naver_config(self, config, task_description, is_search=True):
+        # 검색어 추출
+        search_term = self._extract_search_term(task_description) or "검색어"
+        
+        config["targets"] = [{
+            "name": f"네이버 {search_term} 검색 및 데이터 추출",
+            "url": "https://www.naver.com",
+            "wait_for": {
+                "type": "id",
+                "value": "query",
+                "timeout": 10
+            },
+            "actions": [
+                {
+                    "type": "input",
+                    "selector": {
+                        "type": "id",
+                        "value": "query"
+                    },
+                    "text": search_term,
+                    "submit": False
                 },
-                "actions": [
+                {
+                    "type": "click",
+                    "selector": {
+                        "type": "css",
+                        "value": ".btn_search"
+                    }
+                },
+                {
+                    "type": "wait",
+                    "seconds": 3
+                },
+                {
+                    "type": "screenshot",
+                    "filename": "naver_search_results.png"
+                },
+                {
+                    "type": "extract",
+                    "selector": {
+                        "type": "css",
+                        "value": ".total_tit"
+                    },
+                    "save": True,
+                    "output_file": f"{search_term}_search_results.txt"
+                }
+            ]
+        }]
+
+    def _add_google_config(self, config, task_description, is_search=True):
+        # 검색어 추출
+        search_term = self._extract_search_term(task_description) or "검색어"
+        
+        config["targets"] = [{
+            "name": f"구글 {search_term} 검색 및 데이터 추출",
+            "url": "https://www.google.com",
+            "wait_for": {
+                "type": "name",
+                "value": "q",
+                "timeout": 10
+            },
+            "actions": [
+                {
+                    "type": "input",
+                    "selector": {
+                        "type": "name",
+                        "value": "q"
+                    },
+                    "text": search_term,
+                    "submit": True
+                },
+                {
+                    "type": "wait",
+                    "seconds": 3
+                },
+                {
+                    "type": "screenshot",
+                    "filename": "google_search_results.png"
+                },
+                {
+                    "type": "extract",
+                    "selector": {
+                        "type": "css",
+                        "value": "h3"
+                    },
+                    "save": True,
+                    "output_file": f"{search_term}_google_results.txt"
+                }
+            ]
+        }]
+
+    def _add_generic_config(self, config, task_description, url, is_search=False, is_data_extraction=False, is_form=False):
+        #  작업 이름 구성
+        site_name = re.search(r'https?://(?:www\.)?([^/]+)', url)
+        site_name = site_name.group(1) if site_name else "웹사이트"
+        
+        actions = []
+        
+        # 페이지 스크린샷은 기본 작업
+        actions.append({
+            "type": "screenshot",
+            "filename": f"{site_name}_screenshot.png"
+        })
+        
+        # 검색 기능이 필요한 경우
+        if is_search:
+            search_term = self._extract_search_term(task_description) or "검색어"
+            actions.insert(0, {
+                "type": "input",
+                "selector": {
+                    "type": "css",
+                    "value": "input[type='text'], input[type='search'], .search-input"
+                },
+                "text": search_term,
+                "submit": False
+            })
+            actions.insert(1, {
+                "type": "click",
+                "selector": {
+                    "type": "css",
+                    "value": "button[type='submit'], .search-button, input[type='submit']"
+                }
+            })
+            actions.insert(2, {
+                "type": "wait",
+                "seconds": 3
+            })
+        
+        # 데이터 추출이 필요한 경우
+        if is_data_extraction:
+            actions.append({
+                "type": "extract",
+                "selector": {
+                    "type": "css",
+                    "value": "h1, h2, h3, .title, .item-title"
+                },
+                "save": True,
+                "output_file": f"{site_name}_extracted_data.txt"
+            })
+        
+        # 양식 제출이 필요한 경우
+        if is_form:
+            # 작업 조정 (구체적인 양식 필드는 사이트마다 다름)
+            actions = [
+                {
+                    "type": "input",
+                    "selector": {
+                        "type": "css",
+                        "value": "input[type='text'], .form-control"
+                    },
+                    "text": "샘플 텍스트",
+                    "submit": False
+                },
+                {
+                    "type": "click",
+                    "selector": {
+                        "type": "css", 
+                        "value": "button[type='submit'], input[type='submit']"
+                    }
+                },
+                {
+                    "type": "wait",
+                    "seconds": 3
+                    },
                     {
                         "type": "screenshot",
-                        "filename": "example_site.png"
+                        "filename": f"{site_name}_form_submitted.png"
                     }
                 ]
-            }]
             
-        return default_config
+        config["targets"] = [{
+            "name": f"{site_name} 자동화",
+            "url": url,
+            "wait_for": {
+                "type": "tag_name",
+                "value": "body",
+                "timeout": 10
+            },
+            "actions": actions
+        }]
+
+    def _extract_search_term(self, task_description):
+        """작업 설명에서 검색어 추출"""
+        # 따옴표로 둘러싸인 검색어 추출 시도
+        search_match = re.search(r"['\"](.*?)['\"]", task_description)
+        if search_match:
+            return search_match.group(1)
+        
+        # '검색' 단어 이후의 단어 추출 시도
+        search_after = re.search(r"검색\s*[:\-]?\s*(\S+)", task_description)
+        if search_after:
+            return search_after.group(1)
+            
+        # 영어 'search' 단어 이후의 단어 추출 시도
+        search_eng = re.search(r"search\s*[:\-]?\s*(\S+)", task_description, re.IGNORECASE)
+        if search_eng:
+            return search_eng.group(1)
+        
+        return None
 
     def validate_config(self, config):
         """설정 파일의 모든 셀렉터와 액션 유효성 검사"""
@@ -1504,6 +1975,135 @@ def _extract_and_validate_config(self, raw_text):
         
         return task_description + feedback
 
+    def _save_failed_json(self, json_str, error_message, stage="parsing"):
+        """실패한 JSON을 파일로 저장하여 디버깅 지원"""
+        # 저장 디렉토리 생성
+        failed_dir = os.path.join(self.temp_dir, 'failed')
+        os.makedirs(failed_dir, exist_ok=True)
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # 실패한 JSON 저장
+        json_file_path = os.path.join(failed_dir, f'failed_{stage}_{timestamp}.json')
+        with open(json_file_path, 'w', encoding='utf-8') as f:
+            f.write(json_str)
+        
+        # 오류 정보 저장
+        error_file_path = os.path.join(failed_dir, f'error_{stage}_{timestamp}.txt')
+        with open(error_file_path, 'w', encoding='utf-8') as f:
+            f.write(f"Error: {error_message}\n\n")
+            
+            # 86번째 컬럼 근처 내용 분석 (JSON 파싱 오류 시)
+            if "column 86" in error_message and len(json_str) > 86:
+                context_before = json_str[max(0, 86-30):86]
+                problematic_char = json_str[86] if 86 < len(json_str) else "EOF"
+                context_after = json_str[87:min(len(json_str), 86+30)] if 87 < len(json_str) else ""
+                
+                f.write("========== 오류 발생 위치 분석 ==========\n")
+                f.write(f"이전 컨텍스트: {context_before}\n")
+                f.write(f"문제 문자(86번째 컬럼): {problematic_char}\n")
+                f.write(f"이후 컨텍스트: {context_after}\n")
+        
+        if hasattr(self, 'logger'):
+            self.logger.info(f"실패한 JSON 저장: {json_file_path}")
+            self.logger.info(f"오류 정보 저장: {error_file_path}")
+        else:
+            print(f"실패한 JSON 저장: {json_file_path}")
+            print(f"오류 정보 저장: {error_file_path}")
+        
+        return json_file_path, error_file_path
+
+
+    def _fix_json_with_gemini(self, invalid_json):
+        """Gemini API를 사용하여 잘못된 JSON 수정 시도"""
+        prompt = f"""
+        다음은 잘못된 형식의 JSON 문자열입니다. 이를 올바른 Selenium 자동화 설정 JSON으로 수정해주세요.
+        
+        잘못된 JSON:
+        ```
+        {invalid_json}
+        ```
+        
+        수정된 JSON은 다음 필수 요구사항을 충족해야 합니다:
+        1. 모든 문자열은 큰따옴표로 묶여야 합니다.
+        2. 객체의 키 이름은 큰따옴표로 묶여야 합니다.
+        3. 마지막 항목 뒤에 콤마가 없어야 합니다.
+        4. "targets" 배열이 반드시 존재해야 하며, 최소 1개 이상의 작업 대상을 포함해야 합니다.
+        5. 각 target 객체는 "name", "url", "actions" 필드를 포함해야 합니다.
+        6. "actions" 배열에는 최소 1개 이상의 동작이 포함되어야 합니다.
+        
+        대상 사이트가 수강신청 시스템이므로, 다음 요소를 포함하는 것이 좋습니다:
+        - 로그인 기능 (ID/PWD 입력)
+        - 과목 검색 및 선택 기능
+        - 수강신청 버튼 클릭 기능
+        
+        응답은 수정된 JSON만 포함해야 합니다. 다른 설명이나 텍스트는 포함하지 마세요.
+        """        
+        try:
+            if hasattr(self, 'logger'):
+                self.logger.info("Gemini API를 사용하여 JSON 수정 시도 중...")
+            
+            response = self.model.generate_content(prompt)
+            fixed_json_str = response.text
+            
+            if hasattr(self, 'logger'):
+                self.logger.debug(f"Gemini API 응답: {fixed_json_str[:200]}...")
+            
+            # JSON 문자열에서 JSON 객체 부분만 추출
+            # 코드 블록이 있는 경우 추출
+            backtick = '`'
+            code_block_marker = backtick * 3
+            
+            if code_block_marker in fixed_json_str:
+                pattern = r'``````'
+                match = re.search(pattern, fixed_json_str)
+                if match:
+                    fixed_json_str = match.group(1).strip()
+                    
+            # JSON 시작과 끝 찾기
+            json_start = fixed_json_str.find('{')
+            json_end = fixed_json_str.rfind('}') + 1
+            
+            if json_start >= 0 and json_end > json_start:
+                fixed_json_str = fixed_json_str[json_start:json_end]
+                
+                # 수정된 JSON 저장 (디버깅용)
+                if hasattr(self, 'temp_dir'):
+                    debug_dir = os.path.join(self.temp_dir, 'json_debug')
+                    os.makedirs(debug_dir, exist_ok=True)
+                    
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    fixed_json_path = os.path.join(debug_dir, f'fixed_json_{timestamp}.json')
+                    
+                    with open(fixed_json_path, 'w', encoding='utf-8') as f:
+                        f.write(fixed_json_str)
+                    
+                    if hasattr(self, 'logger'):
+                        self.logger.debug(f"수정된 JSON 저장: {fixed_json_path}")
+                
+                # JSON 파싱 시도
+                try:
+                    config = json.loads(fixed_json_str)
+                    
+                    if hasattr(self, 'logger'):
+                        self.logger.info("Gemini API로 JSON 수정 성공")
+                    
+                    return config
+                except json.JSONDecodeError as e:
+                    if hasattr(self, 'logger'):
+                        self.logger.error(f"수정된 JSON 파싱 실패: {e}")
+                    return None
+            else:
+                if hasattr(self, 'logger'):
+                    self.logger.error("응답에서 JSON 객체를 찾을 수 없습니다")
+                return None
+                
+        except Exception as e:
+            if hasattr(self, 'logger'):
+                self.logger.error(f"JSON 수정 중 오류 발생: {e}")
+            return None
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Gemini API를 이용한 Selenium 설정 파일 생성")
     parser.add_argument("--task", required=True, help="자동화 작업 설명")
@@ -1511,31 +2111,30 @@ if __name__ == "__main__":
     parser.add_argument("--api-key", help="Gemini API 키")
     parser.add_argument("--max-retries", type=int, default=5, help="최대 시도 횟수")
     parser.add_argument("--validate-only", action="store_true", help="기존 설정 파일만 검증")
+    parser.add_argument("--prompt", help="사용자 정의 프롬프트 파일 경로")
+    parser.add_argument("--verbose", "-v", action="store_true", help="상세 로깅 활성화")
     
     args = parser.parse_args()
     
-    generator = GeminiConfigGenerator(api_key=args.api_key, max_retries=args.max_retries)
+    # GeminiConfigGenerator 인스턴스 생성 (올바른 문법)
+    config_gen = GeminiConfigGenerator(api_key=args.api_key, max_retries=args.max_retries)
     
-    if args.validate_only and os.path.exists(args.output):
-        # 기존 설정 파일 검증
-        with open(args.output, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-            
-        is_valid, issues = generator.validate_config(config)
-        if is_valid:
-            print(f"설정 파일이 유효합니다: {args.output}")
-        else:
-            print(f"설정 파일에 다음과 같은 문제가 있습니다:")
-            for issue in issues:
-                print(f"- {issue}")
-    else:
-        # 새 설정 파일 생성
-        config = generator.generate_config(args.task)
-        
-        with open(args.output, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-        
-        print(f"생성된 설정 파일: {args.output}")
+    # 프롬프트 파일 처리
+    custom_prompt = None
+    if args.prompt and os.path.exists(args.prompt):
+        try:
+            with open(args.prompt, 'r', encoding='utf-8') as f:
+                custom_prompt = f.read()
+        except Exception as e:
+            print(f"프롬프트 파일 로드 중 오류: {e}")
+    
+    # 설정 파일 생성
+    config = config_gen.generate_config(args.task, custom_prompt)
+    
+    with open(args.output, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+    
+    print(f"생성된 설정 파일: {args.output}")
 EOFPY
 
   # 실행 권한 부여
@@ -1543,7 +2142,7 @@ EOFPY
   
   # 의존성 설치
   source ../setup/venv/bin/activate
-  pip install google-generativeai python-dotenv
+  pip install google-generativeai python-dotenv json5
   pip install --upgrade google-generativeai python-dotenv
   
   # .env 파일 템플릿 생성
@@ -1641,6 +2240,8 @@ main() {
   log_success "셀레니움 웹 자동화 환경 설정이 완료되었습니다."
   
   print_post_setup_guide
+
+  source venv/bin/activate
 }
 # 스크립트 시작
 main "$@"
