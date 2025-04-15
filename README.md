@@ -116,7 +116,37 @@ python ./gemini_config_gen.py --task "네이버에서 '코로나 바이러스' �
 ```
 
 <a id="header-5"></a>
-### ./setup.sh --help 으로 확인
+
+### 1. ./setup.sh --help 으로 확인
+
+```bash
+===== Selenium 웹 자동화 환경 설정 =====
+[INFO] [2025-04-15 11:06:24] 로깅 시작: logs/setup_20250415_110624.log
+사용법: ./linux_setup.sh [옵션]
+옵션:
+  -n, --non-interactive   대화형 프롬프트 없이 실행
+  -b, --browser TYPE      브라우저 유형 (chrome, firefox, both)
+  -p, --packages LEVEL    패키지 레벨 (basic, extended, custom:패키지1,패키지2)
+  -h, --headless          헤드리스 브라우저 모드 설정
+  --help                  이 도움말 메시지 표시
+```
+
+### 2. python ./gemini_config_gen.py --help 으로 확인
+
+```bash
+usage: gemini_config_gen.py [-h] --task TASK [--output OUTPUT] [--api-key API_KEY] [--max-retries MAX_RETRIES] [--validate-only]
+
+Gemini API를 이용한 Selenium 설정 파일 생성
+
+options:
+  -h, --help            show this help message and exit
+  --task TASK           자동화 작업 설명
+  --output OUTPUT       출력 파일 경로
+  --api-key API_KEY     Gemini API 키
+  --max-retries MAX_RETRIES
+                        최대 시도 횟수
+  --validate-only       기존 설정 파일만 검증
+```
 
 <hr/>
 

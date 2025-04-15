@@ -33,7 +33,7 @@ end
 # Unset irrelevant variables.
 deactivate nondestructive
 
-set -gx VIRTUAL_ENV /workspace/Crawler/jbnu_crawler/sugang/setup/venv
+set -gx VIRTUAL_ENV /workspace/Crawler/example/naver/setup/venv
 
 set -gx _OLD_VIRTUAL_PATH $PATH
 set -gx PATH "$VIRTUAL_ENV/"bin $PATH
