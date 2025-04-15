@@ -1147,6 +1147,7 @@ from dotenv import load_dotenv
 import string
 import logging
 from datetime import datetime
+import sys
 
 class EnhancedSafeFormatter(string.Formatter):
     """누락된 키를 원본 문자열로 유지하는 커스텀 포맷터"""
@@ -1194,7 +1195,7 @@ class GeminiConfigGenerator:
         self.verbose = verbose
         self.temp_dir = temp_dir or os.getcwd()
         self.safe_formatter = EnhancedSafeFormatter()
-        
+        self.user_url = None
         # 로깅 설정
         self._setup_logging()
         
@@ -1225,11 +1226,15 @@ class GeminiConfigGenerator:
         # 지원되는 모델로 변경
         self.model = genai.GenerativeModel('gemini-1.5-flash')
         
-        # 설정 파일 템플릿과 기타 속성 설정
         self.config_template = {
-            # 기존 템플릿 유지
+            "targetUrl": "https://example.com", 
+            "browser": "chrome",
+            "timeouts": {"implicit": 10},
+            "output": {"format": "json"},
+            "selectors": {},
+            "actions": []
         }
-        
+
         # 유효한 셀렉터 타입 목록
         self.valid_selector_types = [
             "id", "css", "xpath", "class_name", "tag_name", "name", "link_text", "partial_link_text"
@@ -1242,8 +1247,10 @@ class GeminiConfigGenerator:
 
 
 
-    def generate_config(self, task_description, custom_prompt=None):
+    def generate_config(self, task_description, custom_prompt=None, user_url=None):
         """유효한 설정 파일을 생성할 때까지 반복 시도"""
+
+        self.user_url = user_url
         self.task_description = task_description
 
         for attempt in range(self.max_retries):
@@ -1251,6 +1258,17 @@ class GeminiConfigGenerator:
             
             # 설정 파일 생성 시도
             config = self._generate_config_attempt(task_description, custom_prompt)
+            
+            if "targetUrl" not in config:
+                raise KeyError("설정 파일에 targetUrl 필드가 누락되었습니다")
+
+            if not isinstance(config["targetUrl"], str) or len(config["targetUrl"]) < 10:
+                raise ValueError("유효하지 않은 targetUrl 형식입니다")
+
+            if config["targetUrl"] == 'https://example.com':
+                raise ValueError("잘못된 기본 URL이 설정되었습니다")
+            elif config["targetUrl"] == 'https://':
+                raise ValueError("URL을 다시 확인하세요.")
             
             # 유효성 검사
             validation_result, issues = self.validate_config(config)
@@ -1379,13 +1397,45 @@ class GeminiConfigGenerator:
                     safe_vars[k] = f"<{type(v).__name__}>"
             json.dump(safe_vars, f, indent=2, ensure_ascii=False)
             
+    def is_valid_url(url):
+        import re
+        
+        # URL이 없거나 기본 예제 도메인인 경우
+        if not url or "example.com" in url:
+            return False
+            
+        # 프로토콜 확인
+        if not url.startswith("http://") and not url.startswith("https://"):
+            return False
+            
+        # 불완전한 URL 확인 (예: "https:")
+        parts = url.split("://")
+        if len(parts) < 2 or len(parts[1].strip()) < 3:
+            return False
+            
+        # 정규식 패턴으로 유효성 검사
+        pattern = re.compile(
+            r'^(https?://)'  # http:// 또는 https://
+            r'([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'  # 도메인 (최소 2글자 TLD)
+            r'(:\d+)?'  # 포트 (선택)
+            r'(/.*)?$'  # 경로 (선택)
+        )
+        return bool(pattern.match(url))
+
     def _create_fallback_prompt(self, task_description, original_prompt):
         """포맷팅 실패 시 대체 프롬프트 생성"""
         try:
-            # URL 추출
-            urls = re.findall(r'https?://[^\s"\'<>]+', original_prompt)
-            url_text = "\n".join([f"- {url}" for url in urls]) if urls else "URL이 지정되지 않았습니다."
             
+            site_url = None
+            if self.user_url is None:
+                # URL 추출
+                urls = re.findall(r'https?://[^\s"\'<>]+', original_prompt)
+                url_text = "\n".join([f"- {url}" for url in urls]) if urls else "URL이 지정되지 않았습니다."
+                if is_valid_url(url_text) is False:
+                    print("invalid url")
+            else:
+                site_url = self.user_url 
+                
             # 텍스트 중 일부 추출 (중괄호 제외)
             safe_text = re.sub(r'[{}]', '', original_prompt)
             # 처음 500자만 사용
@@ -1573,29 +1623,12 @@ class GeminiConfigGenerator:
                 json_str = re.sub(r'([{,]\s*)(\w+)(\s*:)', r'\1"\2"\3', json_str)
                 
                 try:
-                    try:
-                        # 1. 첫 번째 시도: json5 라이브러리 사용 (설치 필요)
-                        import json5
-                        config = json5.loads(json_str)
-                    except ImportError:
-                        try:
-                            # 2. 두 번째 시도: strict=False로 표준 json 사용
-                            config = json.loads(json_str, strict=False)
-                        except:
-                            # 3. 세 번째 시도: 더 공격적인 정규식으로 수정
-                            fixed_json = re.sub(r'([{,])\s*(\w+)\s*:', r'\1"\2":', json_str)
-                            config = json.loads(fixed_json)
-                    
-                    # 필수 필드 검증 (기존 코드와 동일)
-                    required_fields = ['browser', 'targets', 'output', 'timeouts']
-                    for field in required_fields:
-                        if field not in config:
-                            raise ValueError(f"필수 필드 누락: {field}")
-                    
+                    # JSON 파싱 시도...
+                    config = json.loads(json_str)
                     return config
                 except Exception as e:
-                    print(f"JSON 파싱 오류: {e}")
-                    error_message = {e}
+                    error_message = f"JSON 파싱 오류: {e}"
+                    print(error_message)
                     
                     # 실패한 JSON 저장
                     self._save_failed_json(json_str, error_message, "parsing")
@@ -1610,8 +1643,6 @@ class GeminiConfigGenerator:
                     
                     print("기본 템플릿을 사용합니다")
                     return self._create_default_config(self.task_description)
-            else:
-                raise ValueError("JSON 형식을 찾을 수 없습니다")
         except Exception as e:
             print(f"처리 중 오류: {e}")
             return self._create_default_config(self.task_description)
@@ -1619,12 +1650,61 @@ class GeminiConfigGenerator:
 
     def _create_default_config(self, task_description):
         """안전한 기본 설정 파일 생성"""
+        if hasattr(self, 'logger'):
+            self.logger.info("안전한 기본 설정 파일 생성 중...")
+
+        target_url = None
+
+        # 1. 사용자가 제공한 URL 확인
+        if hasattr(self, 'user_url') and self.user_url:
+            if "example.com" in self.user_url:
+                print("\n⚠️ 오류: 기본 예제 URL(example.com)은 사용할 수 없습니다.")
+                print("올바른 URL을 --url 인자로 지정해주세요.")
+                sys.exit(1)  # 프로그램 종료
+            target_url = self.user_url
+            if hasattr(self, 'logger'):
+                self.logger.info(f"사용자 지정 URL 사용: {target_url}")
+        
+        # 2. URL이 없으면 작업 설명에서 추출 시도
+        if not target_url:
+            url_match = re.search(r'https?://[^\s"\'<>]+', task_description)
+            if url_match:
+                extracted_url = url_match.group(0)
+                if "example.com" in extracted_url:
+                    print("\n⚠️ 오류: 작업 설명에서 추출된 URL이 기본 예제 도메인(example.com)입니다.")
+                    print("올바른 URL을 --url 인자로 명시적으로 지정해주세요.")
+                    sys.exit(1)  # 프로그램 종료
+                target_url = extracted_url
+                if hasattr(self, 'logger'):
+                    self.logger.info(f"작업 설명에서 URL 추출: {target_url}")
+        
+        # 3. URL이 여전히 없거나 유효하지 않은 경우
+        if not target_url:
+            print("\n⚠️ 오류: 유효한 URL이 제공되지 않았습니다.")
+            print("작업을 계속하려면 --url 인자로 유효한 URL을 명시적으로 지정해주세요.")
+            sys.exit(1)  # 프로그램 종료
+        
+        # URL 형식 검증 (프로토콜 포함 여부)
+        if not target_url.startswith("http://") and not target_url.startswith("https://"):
+            print("\n⚠️ 오류: URL은 반드시 'http://' 또는 'https://'로 시작해야 합니다.")
+            print(f"현재 URL: {target_url}")
+            print("올바른 형식의 URL을 지정해주세요.")
+            sys.exit(1)  # 프로그램 종료
+        
+        # URL이 불완전한 경우 (예: "https:")
+        if len(target_url.split("://")[1].strip()) < 3:
+            print("\n⚠️ 오류: 불완전한 URL이 지정되었습니다.")
+            print(f"현재 URL: {target_url}")
+            print("도메인을 포함한 완전한 URL을 지정해주세요.")
+            sys.exit(1)  # 프로그램 종료
+
         default_config = self.config_template.copy()
-        
-        # URL 추출 시도 - 보다 범용적인 방식
-        url_match = re.search(r'https?://[^\s"\'<>]+', task_description)
-        target_url = url_match.group(0) if url_match else print("올바른 url 지정 필요!")
-        
+        if hasattr(self, 'target_url') and self.target_url:
+            default_config["targetUrl"] = self.target_url
+
+        if hasattr(self, 'logger'):
+            self.logger.info(f"최종 타겟 URL 설정 완료: {default_config['targetUrl']}")
+
         # 작업 유형 파악 시도
         is_search = "검색" in task_description or "search" in task_description.lower()
         is_data_extraction = "추출" in task_description or "extract" in task_description.lower()
@@ -1736,6 +1816,7 @@ class GeminiConfigGenerator:
 
     def _add_generic_config(self, config, task_description, url, is_search=False, is_data_extraction=False, is_form=False):
         #  작업 이름 구성
+        config["targets"][0]["url"] = config["targetUrl"] 
         site_name = re.search(r'https?://(?:www\.)?([^/]+)', url)
         site_name = site_name.group(1) if site_name else "웹사이트"
         
@@ -1815,7 +1896,7 @@ class GeminiConfigGenerator:
             
         config["targets"] = [{
             "name": f"{site_name} 자동화",
-            "url": url,
+            "url": self.target_url if hasattr(self, 'target_url') and self.target_url else "https://www.example.com",
             "wait_for": {
                 "type": "tag_name",
                 "value": "body",
@@ -1847,6 +1928,9 @@ class GeminiConfigGenerator:
         """설정 파일의 모든 셀렉터와 액션 유효성 검사"""
         issues = []
         
+        if hasattr(self, 'target_url') and self.target_url and "targetUrl" not in config:
+            config["targetUrl"] = self.target_url
+
         # 대상 검증
         if not config.get("targets") or len(config["targets"]) == 0:
             issues.append("최소 하나 이상의 대상이 필요합니다")
@@ -1883,6 +1967,7 @@ class GeminiConfigGenerator:
                     issues.extend(selector_issues)
         
         return len(issues) == 0, issues
+        
 
     def _validate_selector(self, action, target_idx, action_idx):
         """액션의 셀렉터 유효성 검사"""
@@ -2082,17 +2167,22 @@ class GeminiConfigGenerator:
                         self.logger.debug(f"수정된 JSON 저장: {fixed_json_path}")
                 
                 # JSON 파싱 시도
-                try:
-                    config = json.loads(fixed_json_str)
-                    
-                    if hasattr(self, 'logger'):
-                        self.logger.info("Gemini API로 JSON 수정 성공")
-                    
-                    return config
-                except json.JSONDecodeError as e:
-                    if hasattr(self, 'logger'):
-                        self.logger.error(f"수정된 JSON 파싱 실패: {e}")
-                    return None
+            try:
+                config = json.loads(fixed_json_str)
+                
+                if hasattr(self, 'logger'):
+                    self.logger.info("Gemini API로 JSON 수정 성공")
+                
+                return config
+            except json.JSONDecodeError as e:
+                error_message = f"수정된 JSON 파싱 실패: {e}"
+                if hasattr(self, 'logger'):
+                    self.logger.error(error_message)
+                
+                # 수정 실패한 JSON 저장
+                self._save_failed_json(fixed_json_str, error_message, "gemini_fix")
+                
+                return None
             else:
                 if hasattr(self, 'logger'):
                     self.logger.error("응답에서 JSON 객체를 찾을 수 없습니다")
@@ -2113,12 +2203,13 @@ if __name__ == "__main__":
     parser.add_argument("--validate-only", action="store_true", help="기존 설정 파일만 검증")
     parser.add_argument("--prompt", help="사용자 정의 프롬프트 파일 경로")
     parser.add_argument("--verbose", "-v", action="store_true", help="상세 로깅 활성화")
-    
+    parser.add_argument("--url", help="타겟 사이트의 URL (예: https://example.com)")
+
     args = parser.parse_args()
     
     # GeminiConfigGenerator 인스턴스 생성 (올바른 문법)
     config_gen = GeminiConfigGenerator(api_key=args.api_key, max_retries=args.max_retries)
-    
+
     # 프롬프트 파일 처리
     custom_prompt = None
     if args.prompt and os.path.exists(args.prompt):
@@ -2129,7 +2220,11 @@ if __name__ == "__main__":
             print(f"프롬프트 파일 로드 중 오류: {e}")
     
     # 설정 파일 생성
-    config = config_gen.generate_config(args.task, custom_prompt)
+    config = config_gen.generate_config(args.task, custom_prompt, args.url)
+    
+    # URL이 제공되었으나 설정에 없는 경우 추가
+    if args.url and "targetUrl" not in config:
+        config["targetUrl"] = args.url
     
     with open(args.output, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
