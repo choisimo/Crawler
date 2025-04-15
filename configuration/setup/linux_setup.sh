@@ -587,7 +587,7 @@ generate_sample_script() {
   
   if [[ "$CREATE_SAMPLE" =~ ^[Yy]$ ]]; then
     # 기본 샘플 스크립트
-    cat > web_automation.py << 'EOF'
+    cat > ../gemini/web_automation.py << 'EOF'
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -964,8 +964,122 @@ if __name__ == "__main__":
     main()
 EOF
 
+
+    cat > ../gemini/config_file_manager.py << 'EOF'
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+json file 검증 및 fix 스크립트
+"""
+class ConfigFileManager:
+    def __init__(self, temp_dir=None):
+        self.temp_dir = temp_dir or os.getcwd()
+        
+    def load_config(self, file_path):
+        """기존 설정 파일 로드 및 기본 검증"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                
+            # 필수 필드 검증
+            required_fields = ['targetUrl', 'targets']
+            for field in required_fields:
+                if field not in config:
+                    raise ValueError(f"필수 필드 누락: {field}")
+                    
+            return config
+        except Exception as e:
+            raise RuntimeError(f"파일 로드 실패: {e}")
+
+    def save_revision(self, config, revision_num):
+        """수정본 버전 관리 저장"""
+        revisions_dir = os.path.join(self.temp_dir, 'revisions')
+        os.makedirs(revisions_dir, exist_ok=True)
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'config_rev_{revision_num}_{timestamp}.json'
+        path = os.path.join(revisions_dir, filename)
+        
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+            
+        return path
+
+
+class ConfigValidator(GeminiConfigGenerator):
+    def iterative_fix(self, initial_config, max_attempts=5):
+        """점진적 설정 파일 개선 프로세스"""
+        current_config = initial_config.copy()
+        file_manager = ConfigFileManager(self.temp_dir)
+        
+        for attempt in range(1, max_attempts+1):
+            # 1단계: 기본 검증
+            is_valid, issues = self.validate_config(current_config)
+            
+            if is_valid:
+                print(f"✅ [{attempt}/{max_attempts}] 유효한 설정 파일 확인")
+                return current_config
+                
+            # 2단계: 문제점 분석
+            print(f"🔧 [{attempt}/{max_attempts}] 문제 수정 시도 중...")
+            analysis = self.analyze_issues(current_config, issues)
+            
+            # 3단계: Gemini 기반 수정
+            fixed_config = self.fix_with_feedback(current_config, analysis)
+            file_manager.save_revision(fixed_config, attempt)
+            
+            # 4단계: 수정본 적용
+            current_config = fixed_config
+            
+        return current_config  # 최종 버전 반환
+
+    def analyze_issues(self, config, issues):
+        """문제점 심층 분석"""
+        analysis = {
+            'structure_issues': [],
+            'selector_issues': [],
+            'action_issues': []
+        }
+        
+        # 문제 분류
+        for issue in issues:
+            if '셀렉터' in issue:
+                analysis['selector_issues'].append(issue)
+            elif '액션' in issue:
+                analysis['action_issues'].append(issue)
+            else:
+                analysis['structure_issues'].append(issue)
+                
+        # 심각도 평가
+        severity = 'HIGH' if len(analysis['structure_issues']) > 0 else 'MEDIUM'
+        analysis['severity'] = severity
+        
+        return analysis
+
+    def fix_with_feedback(self, config, analysis):
+        """Gemini를 이용한 컨텍스트 보존 수정"""
+        prompt = f"""다음 웹 자동화 설정 파일을 수정하세요. 문제 분석 결과와 원본 구조를 유지해야 합니다.
+        
+        [원본 설정]
+        {json.dumps(config, indent=2, ensure_ascii=False)}
+        
+        [발견된 문제점]
+        {analysis}
+        
+        [수정 요구사항]
+        1. 구조적 문제({analysis['severity']} 우선순위) 해결
+        2. 셀렉터 오류 수정 시 원본 로직 유지
+        3. 액션 순서 변경 없이 구문만 교정
+        4. 누락된 필드는 원본 데이터 참조하여 추가
+        5. JSON 형식 엄격 준수
+        """
+        
+        response = self.model.generate_content(prompt)
+        return self._extract_and_validate_config(response.text)
+EOF
+
     # 헤드리스 모드 테스트 스크립트
-    cat > test_headless.py << 'EOF'
+    cat > ../gemini/test_headless.py << 'EOF'
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -1148,6 +1262,7 @@ import string
 import logging
 from datetime import datetime
 import sys
+import config_file_manager
 
 class EnhancedSafeFormatter(string.Formatter):
     """누락된 키를 원본 문자열로 유지하는 커스텀 포맷터"""
@@ -1226,10 +1341,13 @@ class GeminiConfigGenerator:
         # 지원되는 모델로 변경
         self.model = genai.GenerativeModel('gemini-1.5-flash')
                 
-                
+
         self.config_template = {
             "targetUrl": "https://example.com",
-            "browser": "chrome",
+            "browser": {
+                "type": "chrome",
+                "headless": True
+            },
             "timeouts": {"implicit": 10},
             "output": {"format": "json"},
             "targets": [
@@ -1260,6 +1378,12 @@ class GeminiConfigGenerator:
         """유효한 설정 파일을 생성할 때까지 반복 시도"""
 
         self.user_url = self._fix_url(user_url) if user_url else None
+
+        if self.user_url:
+            self.config_template["targetUrl"] = self.user_url
+            if self.config_template.get("targets"):
+                self.config_template["targets"][0]["url"] = self.user_url
+
         self.task_description = task_description
 
         for attempt in range(self.max_retries):
@@ -1341,7 +1465,13 @@ class GeminiConfigGenerator:
                 prompt_template = self.default_prompt_template
                 prompt = prompt_template.format(task_description=task_description)
                 # 추가 정보 포함
+                url_context = ""
+                if self.user_url:
+                    url_context = f"\n대상 사이트 URL: {self.user_url}\n"
+
+
                 prompt += f"""
+                
     
                 설정 파일 구조는 다음과 같아야 합니다:
                 {json.dumps(self.config_template, indent=2, ensure_ascii=False)}
@@ -1707,6 +1837,11 @@ class GeminiConfigGenerator:
         """안전한 기본 설정 파일 생성"""
         default_config = self.config_template.copy()
         
+        if self.user_url:
+            default_config["targetUrl"] = self.user_url
+            if default_config.get("targets"):
+                default_config["targets"][0]["url"] = self.user_url
+
         # URL 강제 설정
         if hasattr(self, 'user_url') and self.user_url:
             default_config["targetUrl"] = self.user_url
@@ -1960,6 +2095,14 @@ class GeminiConfigGenerator:
                 
             # 각 액션 검증
             for action_idx, action in enumerate(target["actions"]):
+                if "selector" in action and isinstance(action["selector"], str):
+                    selector_value = action["selector"]
+                    action["selector"] = {
+                        "type": "css",  # 기본 타입으로 CSS 사용
+                        "value": selector_value
+                    }
+                    if hasattr(self, 'logger'):
+                        self.logger.info(f"문자열 셀렉터를 자동으로 객체 형식으로 변환: {selector_value}")
                 if "type" not in action:
                     issues.append(f"대상 #{target_idx+1}, 액션 #{action_idx+1}에 타입이 없습니다")
                     continue
@@ -1988,6 +2131,11 @@ class GeminiConfigGenerator:
             return issues
             
         selector = action["selector"]
+        
+        # 셀렉터 타입 검사 추가
+        if isinstance(selector, str):
+            issues.append(f"대상 #{target_idx+1}, 액션 #{action_idx+1}의 셀렉터가 객체가 아닌 문자열입니다: {selector}")
+            return issues
         
         # 셀렉터 타입 확인
         if "type" not in selector:
@@ -2235,6 +2383,9 @@ if __name__ == "__main__":
     parser.add_argument("--prompt", help="사용자 정의 프롬프트 파일 경로")
     parser.add_argument("--verbose", "-v", action="store_true", help="상세 로깅 활성화")
     parser.add_argument("--url", help="타겟 사이트의 URL (예: https://example.com)")
+    parser.add_argument("--fix", help="기존 설정 파일 수정 모드")
+    parser.add_argument("--max-fix-attempts", type=int, default=5, 
+                   help="최대 수정 시도 횟수")
 
     args = parser.parse_args()
     print(f"input arguments : ${args}")
@@ -2259,6 +2410,25 @@ if __name__ == "__main__":
     
     with open(args.output, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+
+
+    if args.fix:
+        file_manager = config_file_manager.ConfigFileManager()
+        print(f"🔍 설정 파일 수정 모드 시작: {args.fix}")
+    
+        validator = ConfigValidator(api_key=args.api_key)
+    
+        try:
+            original_config = file_manager.load_config(args.fix)
+            fixed_config = validator.iterative_fix(original_config, args.max_fix_attempts)
+            
+            with open(args.output, 'w', encoding='utf-8') as f:
+                json.dump(fixed_config, f, indent=2, ensure_ascii=False)
+                
+            print(f"✅ 수정 완료: {args.output}")
+        except Exception as e:
+            print(f"❌ 수정 실패: {e}")
+
     
     print(f"생성된 설정 파일: {args.output}")
 EOFPY
