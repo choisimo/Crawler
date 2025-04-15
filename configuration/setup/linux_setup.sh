@@ -1225,15 +1225,24 @@ class GeminiConfigGenerator:
         
         # 지원되는 모델로 변경
         self.model = genai.GenerativeModel('gemini-1.5-flash')
-        
+                
+                
         self.config_template = {
-            "targetUrl": "https://example.com", 
+            "targetUrl": "https://example.com",
             "browser": "chrome",
             "timeouts": {"implicit": 10},
             "output": {"format": "json"},
+            "targets": [
+                {
+                    "name": "기본 작업",
+                    "url": "https://example.com",
+                    "actions": []
+                }
+            ],
             "selectors": {},
             "actions": []
         }
+
 
         # 유효한 셀렉터 타입 목록
         self.valid_selector_types = [
@@ -1250,7 +1259,7 @@ class GeminiConfigGenerator:
     def generate_config(self, task_description, custom_prompt=None, user_url=None):
         """유효한 설정 파일을 생성할 때까지 반복 시도"""
 
-        self.user_url = user_url
+        self.user_url = self._fix_url(user_url) if user_url else None
         self.task_description = task_description
 
         for attempt in range(self.max_retries):
@@ -1259,16 +1268,44 @@ class GeminiConfigGenerator:
             # 설정 파일 생성 시도
             config = self._generate_config_attempt(task_description, custom_prompt)
             
+            if self.user_url:
+                config["targetUrl"] = self.user_url  # 변경된 부분
+                if hasattr(self, 'logger'):
+                    self.logger.info(f"URL 강제 적용: {self.user_url}")
+
+            # 반환값이 튜플인 경우 처리 (기본 설정 + 플래그 형태로 반환될 수 있음)
+            if isinstance(config, tuple):
+                config = config[0]  # 첫 번째 요소가 설정 객체
+            
+            # targetUrl 필드 자동 추가 - 오류 발생 대신 필드 추가
             if "targetUrl" not in config:
-                raise KeyError("설정 파일에 targetUrl 필드가 누락되었습니다")
-
-            if not isinstance(config["targetUrl"], str) or len(config["targetUrl"]) < 10:
-                raise ValueError("유효하지 않은 targetUrl 형식입니다")
-
+                if self.user_url:
+                    config["targetUrl"] = self.user_url
+                    if hasattr(self, 'logger'):
+                        self.logger.info(f"targetUrl 필드 자동 추가: {self.user_url}")
+                else:
+                    # 작업 설명에서 URL 추출 시도
+                    url_match = re.search(r'https?://[^\s"\'<>]+', task_description)
+                    if url_match:
+                        config["targetUrl"] = url_match.group(0)
+                        if hasattr(self, 'logger'):
+                            self.logger.info(f"작업 설명에서 URL 추출하여 추가: {config['targetUrl']}")
+                    elif "reddit" in task_description.lower():
+                        config["targetUrl"] = "https://www.reddit.com"
+                        if hasattr(self, 'logger'):
+                            self.logger.info("Reddit URL 자동 추가")
+                    else:
+                        # 기본값으로 설정
+                        config["targetUrl"] = "https://example.com"
+                        if hasattr(self, 'logger'):
+                            self.logger.info("기본 URL 설정")
+            
+            # URL 유효성 검사 (계속 진행)
             if config["targetUrl"] == 'https://example.com':
-                raise ValueError("잘못된 기본 URL이 설정되었습니다")
+                print("⚠️ 경고: 기본 URL이 사용되었습니다. 명시적인 URL 지정을 권장합니다.")
             elif config["targetUrl"] == 'https://':
-                raise ValueError("URL을 다시 확인하세요.")
+                print("⚠️ 경고: 불완전한 URL이 설정되었습니다. URL을 다시 확인하세요.")
+                config["targetUrl"] = "https://www.example.com"
             
             # 유효성 검사
             validation_result, issues = self.validate_config(config)
@@ -1285,7 +1322,13 @@ class GeminiConfigGenerator:
         
         # 모든 시도가 실패하면 안전한 기본 설정 사용
         print("최대 시도 횟수를 초과했습니다. 안전한 기본 설정을 사용합니다.")
-        return self._create_default_config(task_description)
+        default_config = self._create_default_config(task_description)
+        
+        # 기본 설정에도 URL 적용
+        if self.user_url and "targetUrl" not in default_config:
+            default_config["targetUrl"] = self.user_url
+        
+        return default_config
     
     
     
@@ -1397,30 +1440,29 @@ class GeminiConfigGenerator:
                     safe_vars[k] = f"<{type(v).__name__}>"
             json.dump(safe_vars, f, indent=2, ensure_ascii=False)
             
+
     def is_valid_url(url):
+        """향상된 URL 유효성 검사"""
         import re
         
-        # URL이 없거나 기본 예제 도메인인 경우
-        if not url or "example.com" in url:
-            return False
-            
-        # 프로토콜 확인
+        # URL이 없는 경우
+        if not url:
+            return False, None
+        
+        # 프로토콜이 없는 경우 자동으로 https:// 추가
         if not url.startswith("http://") and not url.startswith("https://"):
-            return False
-            
-        # 불완전한 URL 확인 (예: "https:")
-        parts = url.split("://")
-        if len(parts) < 2 or len(parts[1].strip()) < 3:
-            return False
-            
+            url = f"https://{url}"
+        
         # 정규식 패턴으로 유효성 검사
         pattern = re.compile(
             r'^(https?://)'  # http:// 또는 https://
-            r'([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'  # 도메인 (최소 2글자 TLD)
+            r'([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'  # 도메인
             r'(:\d+)?'  # 포트 (선택)
             r'(/.*)?$'  # 경로 (선택)
         )
-        return bool(pattern.match(url))
+        
+        return bool(pattern.match(url)), url
+
 
     def _create_fallback_prompt(self, task_description, original_prompt):
         """포맷팅 실패 시 대체 프롬프트 생성"""
@@ -1625,6 +1667,9 @@ class GeminiConfigGenerator:
                 try:
                     # JSON 파싱 시도...
                     config = json.loads(json_str)
+                    if self.user_url and "targetUrl" not in config:
+                        config["targetUrl"] = self.user_url
+
                     return config
                 except Exception as e:
                     error_message = f"JSON 파싱 오류: {e}"
@@ -1645,83 +1690,30 @@ class GeminiConfigGenerator:
                     return self._create_default_config(self.task_description)
         except Exception as e:
             print(f"처리 중 오류: {e}")
-            return self._create_default_config(self.task_description)
+            default_config = self._create_default_config(self.task_description)
+            
+            # targets 배열 확인 및 생성
+            if "targets" not in default_config or not default_config["targets"]:
+                default_config["targets"] = [{
+                    "name": "기본 작업",
+                    "url": default_config["targetUrl"],
+                    "actions": []
+                }]
+                
+            return default_config
 
 
     def _create_default_config(self, task_description):
         """안전한 기본 설정 파일 생성"""
-        if hasattr(self, 'logger'):
-            self.logger.info("안전한 기본 설정 파일 생성 중...")
-
-        target_url = None
-
-        # 1. 사용자가 제공한 URL 확인
-        if hasattr(self, 'user_url') and self.user_url:
-            if "example.com" in self.user_url:
-                print("\n⚠️ 오류: 기본 예제 URL(example.com)은 사용할 수 없습니다.")
-                print("올바른 URL을 --url 인자로 지정해주세요.")
-                sys.exit(1)  # 프로그램 종료
-            target_url = self.user_url
-            if hasattr(self, 'logger'):
-                self.logger.info(f"사용자 지정 URL 사용: {target_url}")
-        
-        # 2. URL이 없으면 작업 설명에서 추출 시도
-        if not target_url:
-            url_match = re.search(r'https?://[^\s"\'<>]+', task_description)
-            if url_match:
-                extracted_url = url_match.group(0)
-                if "example.com" in extracted_url:
-                    print("\n⚠️ 오류: 작업 설명에서 추출된 URL이 기본 예제 도메인(example.com)입니다.")
-                    print("올바른 URL을 --url 인자로 명시적으로 지정해주세요.")
-                    sys.exit(1)  # 프로그램 종료
-                target_url = extracted_url
-                if hasattr(self, 'logger'):
-                    self.logger.info(f"작업 설명에서 URL 추출: {target_url}")
-        
-        # 3. URL이 여전히 없거나 유효하지 않은 경우
-        if not target_url:
-            print("\n⚠️ 오류: 유효한 URL이 제공되지 않았습니다.")
-            print("작업을 계속하려면 --url 인자로 유효한 URL을 명시적으로 지정해주세요.")
-            sys.exit(1)  # 프로그램 종료
-        
-        # URL 형식 검증 (프로토콜 포함 여부)
-        if not target_url.startswith("http://") and not target_url.startswith("https://"):
-            print("\n⚠️ 오류: URL은 반드시 'http://' 또는 'https://'로 시작해야 합니다.")
-            print(f"현재 URL: {target_url}")
-            print("올바른 형식의 URL을 지정해주세요.")
-            sys.exit(1)  # 프로그램 종료
-        
-        # URL이 불완전한 경우 (예: "https:")
-        if len(target_url.split("://")[1].strip()) < 3:
-            print("\n⚠️ 오류: 불완전한 URL이 지정되었습니다.")
-            print(f"현재 URL: {target_url}")
-            print("도메인을 포함한 완전한 URL을 지정해주세요.")
-            sys.exit(1)  # 프로그램 종료
-
         default_config = self.config_template.copy()
-        if hasattr(self, 'target_url') and self.target_url:
-            default_config["targetUrl"] = self.target_url
-
-        if hasattr(self, 'logger'):
-            self.logger.info(f"최종 타겟 URL 설정 완료: {default_config['targetUrl']}")
-
-        # 작업 유형 파악 시도
-        is_search = "검색" in task_description or "search" in task_description.lower()
-        is_data_extraction = "추출" in task_description or "extract" in task_description.lower()
-        is_form = "양식" in task_description or "form" in task_description.lower()
         
-        # 웹사이트별 맞춤 설정
-        if "네이버" in task_description.lower() or "naver" in task_description.lower():
-            self._add_naver_config(default_config, task_description, is_search)
-        elif "구글" in task_description.lower() or "google" in task_description.lower():
-            self._add_google_config(default_config, task_description, is_search)
-        elif "쇼핑" in task_description.lower() or "shop" in task_description.lower():
-            self._add_shopping_config(default_config, task_description)
-        else:
-            # 범용 설정
-            self._add_generic_config(default_config, task_description, target_url, is_search, is_data_extraction, is_form)
-                
+        # URL 강제 설정
+        if hasattr(self, 'user_url') and self.user_url:
+            default_config["targetUrl"] = self.user_url
+            default_config["targets"][0]["url"] = self.user_url  # 타겟 URL도 동시 업데이트
+        
         return default_config
+
 
     def _add_naver_config(self, config, task_description, is_search=True):
         # 검색어 추출
@@ -1815,6 +1807,14 @@ class GeminiConfigGenerator:
         }]
 
     def _add_generic_config(self, config, task_description, url, is_search=False, is_data_extraction=False, is_form=False):
+        
+        if "targets" not in config or not config["targets"]:
+            config["targets"] = [{
+            "name": "새 작업",
+            "url": config.get("targetUrl", "https://example.com"),
+            "actions": []
+        }]
+        
         #  작업 이름 구성
         config["targets"][0]["url"] = config["targetUrl"] 
         site_name = re.search(r'https?://(?:www\.)?([^/]+)', url)
@@ -1928,8 +1928,17 @@ class GeminiConfigGenerator:
         """설정 파일의 모든 셀렉터와 액션 유효성 검사"""
         issues = []
         
-        if hasattr(self, 'target_url') and self.target_url and "targetUrl" not in config:
-            config["targetUrl"] = self.target_url
+        # URL 검증 및 수정
+        if "targetUrl" in config:
+            url = config["targetUrl"]
+            if not url.startswith("http://") and not url.startswith("https://"):
+                config["targetUrl"] = f"https://{url}"
+                if hasattr(self, 'logger'):
+                    self.logger.info(f"targetUrl 프로토콜 자동 추가: {config['targetUrl']}")
+        elif hasattr(self, 'user_url') and self.user_url:
+            config["targetUrl"] = self._fix_url(self.user_url)
+            if hasattr(self, 'logger'):
+                self.logger.info(f"targetUrl 필드 추가: {config['targetUrl']}")
 
         # 대상 검증
         if not config.get("targets") or len(config["targets"]) == 0:
@@ -2100,10 +2109,14 @@ class GeminiConfigGenerator:
 
 
     def _fix_json_with_gemini(self, invalid_json):
+        url_info = f'\n반드시 "targetUrl": "{self.user_url}" 필드를 포함해야 합니다.' if self.user_url else ''
+
         """Gemini API를 사용하여 잘못된 JSON 수정 시도"""
         prompt = f"""
         다음은 잘못된 형식의 JSON 문자열입니다. 이를 올바른 Selenium 자동화 설정 JSON으로 수정해주세요.
         
+        {url_info}  
+
         잘못된 JSON:
         ```
         {invalid_json}
@@ -2123,7 +2136,20 @@ class GeminiConfigGenerator:
         - 수강신청 버튼 클릭 기능
         
         응답은 수정된 JSON만 포함해야 합니다. 다른 설명이나 텍스트는 포함하지 마세요.
-        """        
+        
+        반드시 다음 구조를 포함해야 합니다:
+        {{
+        "targetUrl": "사용자_제공_URL",
+        "targets": [
+            {{
+            "name": "작업_이름",
+            "url": "대상_URL",
+            "actions": []
+            }}
+        ]
+        }}
+        """
+
         try:
             if hasattr(self, 'logger'):
                 self.logger.info("Gemini API를 사용하여 JSON 수정 시도 중...")
@@ -2193,6 +2219,11 @@ class GeminiConfigGenerator:
                 self.logger.error(f"JSON 수정 중 오류 발생: {e}")
             return None
 
+    def _fix_url(self, url):
+        if url and not url.startswith('http://') and not url.startswith('https://'):
+            return f'https://{url}'
+        return url
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Gemini API를 이용한 Selenium 설정 파일 생성")
@@ -2206,7 +2237,7 @@ if __name__ == "__main__":
     parser.add_argument("--url", help="타겟 사이트의 URL (예: https://example.com)")
 
     args = parser.parse_args()
-    
+    print(f"input arguments : ${args}")
     # GeminiConfigGenerator 인스턴스 생성 (올바른 문법)
     config_gen = GeminiConfigGenerator(api_key=args.api_key, max_retries=args.max_retries)
 
