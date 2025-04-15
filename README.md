@@ -115,6 +115,15 @@ python ./gemini_config_gen.py --task "네이버에서 '코로나 바이러스' �
 --output "naver_search_config.json"
 ```
 
+### 사용자 지정 프롬프트 사용하기
+```bash
+# 프롬프트를 파일로 저장
+echo "여기에 사용자 정의 프롬프트 작성" > custom_prompt.txt
+
+# 저장한 프롬프트 파일 사용
+python gemini_config_gen.py --task "구글에서 '파이썬 튜토리얼' 검색" --prompt custom_prompt.txt
+```
+
 <a id="header-5"></a>
 
 ### 1. ./setup.sh --help 으로 확인
