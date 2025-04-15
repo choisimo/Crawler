@@ -971,6 +971,8 @@ EOF
 """
 json file 검증 및 fix 스크립트
 """
+
+from gemini_config_gen import GeminiConfigGenerator
 class ConfigFileManager:
     def __init__(self, temp_dir=None):
         self.temp_dir = temp_dir or os.getcwd()
