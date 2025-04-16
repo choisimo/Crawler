@@ -2498,8 +2498,9 @@ EOFPY
   
   # 의존성 설치
   source ../setup/venv/bin/activate
-  pip install google-generativeai python-dotenv json5
+  pip install google-generativeai python-dotenv json5 psutil
   pip install --upgrade google-generativeai python-dotenv
+
   
   # .env 파일 템플릿 생성
   if [ ! -f .env ]; then
@@ -2597,7 +2598,7 @@ main() {
   
   print_post_setup_guide
 
-  source venv/bin/activate
+  echo source venv/bin/activate && cd ../gemini 
 }
 # 스크립트 시작
 main "$@"
