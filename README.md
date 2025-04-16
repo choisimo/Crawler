@@ -12,6 +12,9 @@
 - [Gemini API 통합 사용](#header-4)
 - [주요 기능 설명](#header-5)
 - [문제 해결 트러블 슈팅 해결방법](#header-6)
+- [복합 arguments 활용법](#header-7)
+- [예시 시나리오들](#header-example)
+
 
 <a id="header-1"></a>
 ## 개발 및 테스트 환경
@@ -25,8 +28,10 @@
 <a id="header-2"></a>
 ## 설치 및 간략한 사용방법 (전체 옵션 설명 안 함)
 
+![이미지](https://github.com/user-attachments/assets/10762dc4-53b8-4cca-9384-165e1966281d)
+
 ```bash
-# root/configuration 내부의 shellscript 파일
+# $(project root directory)/configuration 내부의 shellscript 파일
 # > 실행 권한 없으면 chmod +x 으로 권한 주기
 chmod +x ./setup.sh
 ```
@@ -120,9 +125,21 @@ python ./gemini_config_gen.py --task "네이버에서 '코로나 바이러스' �
 # 프롬프트를 파일로 저장
 echo "여기에 사용자 정의 프롬프트 작성" > custom_prompt.txt
 
-# 저장한 프롬프트 파일 사용
+# 저장한 프롬프트 파일 사용 (task는 필수 argument 임!)
 python gemini_config_gen.py --task "구글에서 '파이썬 튜토리얼' 검색" --prompt custom_prompt.txt
 ```
+
+
+### 설정 파일 수정 모드
+
+```bash
+# 손상된 JSON 파일 복구
+./setup.sh --gemini --fix invalid_config.json --gemini-output fixed_config.json
+
+# 복구 과정 시각화
+./setup.sh --gemini --fix broken.json --verbose --max-fix-attempts 5
+```
+
 
 <a id="header-5"></a>
 
@@ -160,6 +177,110 @@ options:
 <hr/>
 
 <a id="header-6"></a>
-### 일단 생략
+
+## 문제 해결 트러블 슈팅
+### Q1. `targetUrl`이 example.com으로 설정되는 문제
+
+**해결방법**:
+
+```bash
+# --url 옵션으로 명시적 지정
+./setup.sh --gemini --url "https://실제사이트.com" ...
+
+# 작업 설명에 URL 포함
+./setup.sh --gemini --gemini-task "https://실제사이트.com 에서 데이터 추출"
+```
+
+
+### Q2. JSON 구문 오류 발생 시
+
+**해결절차**:
+
+1. 오류 발생 파일 확인
+```bash
+cat ./failed/error_parsing_20250416_112233.txt
+```
+
+2. 자동 복구 시도
+```bash
+./setup.sh --gemini --fix broken.json
+```
+
+
+### Q3. 헤드리스 모드 동작 불가
+
+**조치방법**:
+
+```bash
+# Xvfb 서비스 재시작
+sudo systemctl restart xvfb
+
+# DISPLAY 환경변수 확인
+export DISPLAY=:99
+```
+
+
+<a id="header-7"></a>
+
+## 주요 기능 설명
+### 1. URL 처리 
+
+```bash
+# URL 자동 보정 기능
+--url "example.com" → https://example.com
+--url "https://" → 오류 발생 후 기본값 사용
+```
+
+
+### 2. 다단계 JSON 검증
+
+```text
+1차: 기본 문법 검사 → 2차: 셀렉터 유효성 검증 → 3차: 실제 웹 요소 테스트
+```
+
+
+### 3. 자동화 작업 템플릿 사용 (config.json)
+```json
+{
+  "targets": [{
+    "actions": [
+      {"type": "login", "id": "#user", "pw": "#pass"},
+      {"type": "screenshot", "filename": "result.png"}
+    ]
+  }]
+}
+```
+
+
+
+<a id="header-example"></a>
+
+## 사용 예시
+시나리오 상황에 맞는 예시 상황 스크립트들
+### 설정 파일 구조 예시
+
+```bash
+./setup.sh --gemini \
+  --gemini-task "수강신청 포털 로그인 → '데이터사이언스' 검색 → 3개 과목 선택 → 신청" \
+  --gemini-output "ds_courses.json" \
+  --url "https://수강신청.com" \
+  --headless
+```
+
+### 예시 output json 파일
+```json
+{
+  "targetUrl": "https://수강신청.com",
+  "targets": [{
+    "name": "수강신청 작업",
+    "actions": [
+      {"type": "login", "id": "#userid", "pw": "#password"},
+      {"type": "search", "keyword": "데이터사이언스"},
+      {"type": "click", "selector": ".course_checkbox"},
+      {"type": "screenshot", "filename": "result.png"}
+    ]
+  }]
+}
+```
 
 <hr/>
