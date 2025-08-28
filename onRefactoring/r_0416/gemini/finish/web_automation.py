@@ -216,6 +216,18 @@ def take_screenshot(driver, filename, config):
     driver.save_screenshot(screenshot_path)
     return screenshot_path
 
+def _wait_for_clickable(driver, by, value, timeout):
+    return WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((by, value)))
+
+def _safe_find(driver, selector_type, selector_value, timeout):
+    by = get_by_method(selector_type)
+    try:
+        return WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((by, selector_value))
+        )
+    except TimeoutException:
+        return None
+
 def perform_action(driver, action, config, logger):
     """설정된 액션 수행"""
     action_type = action.get("type", "").lower()
@@ -245,10 +257,22 @@ def perform_action(driver, action, config, logger):
         selector = action.get("selector", {})
         selector_type = selector.get("type", "css")
         selector_value = selector.get("value", "")
-        
-        element = driver.find_element(get_by_method(selector_type), selector_value)
-        element.click()
-        
+        timeout = action.get("timeout", config.get("timeouts", {}).get("default_wait", 10))
+
+        by = get_by_method(selector_type)
+        try:
+            el = _wait_for_clickable(driver, by, selector_value, timeout)
+        except TimeoutException:
+            logger.warning(f"클릭 대기 타임아웃, 직접 시도: {selector_value}")
+            el = driver.find_element(by, selector_value)
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
+        except Exception:
+            pass
+        try:
+            el.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", el)
         logger.info(f"클릭 완료: {selector_value}")
     
     elif action_type == "wait":
@@ -353,6 +377,75 @@ def process_target(driver, target, config, logger):
     
     logger.info(f"결과 저장 완료: {result_file}")
     return True
+
+def _ensure_artifacts(config, plan_mode=False):
+    out = config.get("output", {})
+    if plan_mode:
+        base = out.get("artifacts_dir", "artifacts")
+        paths = {
+            "logs_dir": os.path.join(base, "logs"),
+            "screenshots_dir": os.path.join(base, "screenshots"),
+            "results_dir": os.path.join(base, "results"),
+        }
+        for k, p in paths.items():
+            os.makedirs(p, exist_ok=True)
+            out[k] = p
+        config["output"] = out
+
+
+def _validate_plan(plan):
+    # Minimal schema validation
+    issues = []
+    if not isinstance(plan, dict):
+        return False, ["plan must be an object"]
+    if "steps" not in plan or not isinstance(plan["steps"], list) or not plan["steps"]:
+        issues.append("steps must be a non-empty array")
+    else:
+        for i, step in enumerate(plan["steps"]):
+            if not isinstance(step, dict):
+                issues.append(f"step #{i+1} must be an object")
+                continue
+            if "action" not in step:
+                issues.append(f"step #{i+1} missing action")
+                continue
+            act = step["action"].lower()
+            if act in ("click", "input", "extract"):
+                sel = step.get("selector")
+                if not isinstance(sel, dict) or "type" not in sel or "value" not in sel:
+                    issues.append(f"step #{i+1} selector must be an object with type and value")
+            if act == "input" and "text" not in step:
+                issues.append(f"step #{i+1} input requires text")
+            if act == "goto" and "url" not in step:
+                issues.append(f"step #{i+1} goto requires url")
+    return len(issues) == 0, issues
+
+
+def _execute_plan(driver, plan, config, logger):
+    default_wait = config.get("timeouts", {}).get("default_wait", 10)
+    for idx, step in enumerate(plan["steps"]):
+        act = step["action"].lower()
+        logger.info(f"[plan] step {idx+1}: {act}")
+        try:
+            if act == "goto":
+                url = step["url"]
+                driver.get(url)
+                wait_for = step.get("wait_for") or {"type": "tag_name", "value": "body", "timeout": default_wait}
+                WebDriverWait(driver, wait_for.get("timeout", default_wait)).until(
+                    EC.presence_of_element_located((get_by_method(wait_for.get("type", "tag_name")), wait_for.get("value", "body")))
+                )
+            elif act in ("click", "input", "extract", "wait", "scroll", "screenshot"):
+                perform_action(driver, step if act != "wait" else {**step, "type": "wait"}, config, logger)
+            else:
+                logger.warning(f"[plan] unknown action: {act}")
+        except Exception as e:
+            logger.error(f"[plan] step {idx+1} failed: {e}")
+            # capture screenshot on failure
+            try:
+                take_screenshot(driver, f"failed_step_{idx+1}.png", config)
+            except Exception:
+                pass
+            raise
+
 
 def main():
     """메인 실행 함수"""
