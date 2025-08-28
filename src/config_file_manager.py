@@ -4,7 +4,12 @@
 json file 검증 및 fix 스크립트
 """
 
-from gemini_config_gen import GeminiConfigGenerator
+import os
+import json
+from datetime import datetime
+import re
+
+from gemini_api import GeminiApi as GeminiConfigGenerator
 
 
 class ConfigFileManager:
@@ -53,11 +58,11 @@ class ConfigValidator(GeminiConfigGenerator):
             is_valid, issues = self.validate_config(current_config)
 
             if is_valid:
-                print(f"✅ [{attempt}/{max_attempts}] 유효한 설정 파일 확인")
+                print(f"[{attempt}/{max_attempts}] 유효한 설정 파일 확인")
                 return current_config
 
             # 2단계: 문제점 분석
-            print(f"🔧 [{attempt}/{max_attempts}] 문제 수정 시도 중...")
+            print(f"[{attempt}/{max_attempts}] 문제 수정 시도 중...")
             analysis = self.analyze_issues(current_config, issues)
 
             # 3단계: Gemini 기반 수정
@@ -313,7 +318,7 @@ class ConfigGenerator:
 
         config["targets"] = [{
             "name": f"{site_name} 자동화",
-            "url": self.target_url if hasattr(self, 'target_url') and self.target_url else "https://www.example.com",
+            "url": config.get("targetUrl", "https://www.example.com"),
             "wait_for": {
                 "type": "tag_name",
                 "value": "body",

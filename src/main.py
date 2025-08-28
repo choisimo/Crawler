@@ -1,3 +1,9 @@
+import os
+import json
+import argparse
+from config_file_manager import ConfigFileManager, ConfigValidator
+from gemini_api import GeminiApi as GeminiConfigGenerator
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Gemini API를 이용한 Selenium 설정 파일 생성")
     parser.add_argument("--task", required=True, help="자동화 작업 설명")
@@ -13,11 +19,9 @@ if __name__ == "__main__":
                         help="최대 수정 시도 횟수")
 
     args = parser.parse_args()
-    print(f"input arguments : ${args}")
-    # GeminiConfigGenerator 인스턴스 생성 (올바른 문법)
+    print(f"input arguments : {args}")
     config_gen = GeminiConfigGenerator(api_key=args.api_key, max_retries=args.max_retries)
 
-    # 프롬프트 파일 처리
     custom_prompt = None
     if args.prompt and os.path.exists(args.prompt):
         try:
@@ -26,10 +30,8 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"프롬프트 파일 로드 중 오류: {e}")
 
-    # 설정 파일 생성
     config = config_gen.generate_config(args.task, custom_prompt, args.url)
 
-    # URL이 제공되었으나 설정에 없는 경우 추가
     if args.url and "targetUrl" not in config:
         config["targetUrl"] = args.url
 
@@ -37,8 +39,8 @@ if __name__ == "__main__":
         json.dump(config, f, indent=2, ensure_ascii=False)
 
     if args.fix:
-        file_manager = config_file_manager.ConfigFileManager()
-        print(f"🔍 설정 파일 수정 모드 시작: {args.fix}")
+        file_manager = ConfigFileManager()
+        print(f"설정 파일 수정 모드 시작: {args.fix}")
 
         validator = ConfigValidator(api_key=args.api_key)
 
@@ -49,8 +51,8 @@ if __name__ == "__main__":
             with open(args.output, 'w', encoding='utf-8') as f:
                 json.dump(fixed_config, f, indent=2, ensure_ascii=False)
 
-            print(f"✅ 수정 완료: {args.output}")
+            print(f"수정 완료: {args.output}")
         except Exception as e:
-            print(f"❌ 수정 실패: {e}")
+            print(f"수정 실패: {e}")
 
     print(f"생성된 설정 파일: {args.output}")
